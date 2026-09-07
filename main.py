@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import os
 from aiogram import Bot, Dispatcher, F, types
@@ -12,10 +13,8 @@ import asyncpg
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL", "postgresql://db_user:db_password@localhost:5432/db_name")
 
-# Αν το ADMIN_ID δεν έχει μπει ακόμα στο Railway, βάζει προσωρινά 0 για να μην κρασάρει
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# Links for Support button
 GROUP_LINK = "https://t.me/your_group"
 ADMIN_LINK = "https://t.me/your_username"
 
@@ -39,6 +38,7 @@ async def init_db():
                 telegram_id BIGINT PRIMARY KEY,
                 balance NUMERIC(10, 2) DEFAULT 0.00,
                 lifetime_points INT DEFAULT 0,
+                giveaway_tickets INT DEFAULT 0,
                 total_spent NUMERIC(10, 2) DEFAULT 0.00,
                 created_at TIMESTAMP DEFAULT NOW()
             );
@@ -60,6 +60,18 @@ async def init_db():
                 description TEXT,
                 price NUMERIC(10, 2) NOT NULL
             );
+        """)
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS giveaway_settings (
+                id INT PRIMARY KEY,
+                ends_at TIMESTAMP
+            );
+        """)
+        # Δημιουργία αρχικής ρύθμισης κλήρωσης αν δεν υπάρχει (π.χ. 30 μέρες)
+        await connection.execute("""
+            INSERT INTO giveaway_settings (id, ends_at) 
+            VALUES (1, NOW() + INTERVAL '30 days') 
+            ON CONFLICT (id) DO NOTHING;
         """)
 
 # --- HELPER FUNCTIONS ---
@@ -103,9 +115,35 @@ async def admin_panel(message: types.Message):
     
     await message.answer(
         "👑 Καλωσόρισες στο κρυφό μενού διαχειριστή!\n\n"
-        "Χρησιμοποίησε την εντολή /add_media για να ανεβάσεις νέο κλειδωμένο αρχείο.\n"
-        "Χρησιμοποίησε /give_money <ID> <Ποσό> για να βάλεις χρήματα σε κάποιον."
+        "📜 /add_media - Ανέβασμα κλειδωμένου αρχείου\n"
+        "💸 /give_money <ID> <Ποσό> - Πιστώσεις υπολοίπου\n"
+        "⏳ /set_giveaway <ώρες> - Ορισμός διάρκειας κλήρωσης (π.χ. /set_giveaway 5)"
     )
+
+@dp.message(Command("set_giveaway"))
+async def set_giveaway_timer(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("⚠️ Χρήση: `/set_giveaway <ώρες>`", parse_mode="Markdown")
+        return
+
+    try:
+        hours = float(args[1].replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Δώσε έναν έγκυρο αριθμό ωρών (π.χ. 5 ή 2.5).")
+        return
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE giveaway_settings SET ends_at = NOW() + ($1 * INTERVAL '1 hour') WHERE id = 1;",
+            hours
+        )
+        await conn.execute("UPDATE users SET giveaway_tickets = 0;")
+
+    await message.answer(f"✅ Η κλήρωση ρυθμίστηκε να λήγει σε {hours} ώρες. Τα εισιτήρια μηδενίστηκαν και ξεκινάμε νέα κλήρωση!")
 
 @dp.message(Command("give_money"))
 async def admin_give_money(message: types.Message):
@@ -213,7 +251,14 @@ async def process_purchase(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     async with db_pool.acquire() as conn:
-        user = await conn.fetchrow("SELECT balance FROM users WHERE telegram_id = $1;", user_id)
+        # Έλεγχος αν έληξε η κλήρωση πριν την αγορά (για μηδενισμό εισιτηρίων)
+        settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
+        if settings and settings['ends_at'] <= datetime.datetime.now():
+            await conn.execute("UPDATE users SET giveaway_tickets = 0;")
+            # Αυτόματη ανανέωση για άλλες 30 μέρες
+            await conn.execute("UPDATE giveaway_settings SET ends_at = NOW() + INTERVAL '30 days' WHERE id = 1;")
+
+        user = await conn.fetchrow("SELECT balance, lifetime_points FROM users WHERE telegram_id = $1;", user_id)
         media = await conn.fetchrow("SELECT * FROM locked_media WHERE id = $1;", media_id)
         
         if not user or not media:
@@ -226,11 +271,21 @@ async def process_purchase(callback: CallbackQuery):
             
         new_balance = user['balance'] - media['price']
         points_earned = int(media['price']) 
+        old_points = user['lifetime_points']
+        new_total_points = old_points + points_earned
         
+        # Υπολογισμός νέων εισιτηρίων (1 ανά 50 πόντους)
+        tickets_to_add = (new_total_points // 50) - (old_points // 50)
+
         async with conn.transaction():
             await conn.execute(
-                "UPDATE users SET balance = $1, lifetime_points = lifetime_points + $2, total_spent = total_spent + $3 WHERE telegram_id = $4;",
-                new_balance, points_earned, media['price'], user_id
+                """UPDATE users 
+                   SET balance = $1, 
+                       lifetime_points = lifetime_points + $2, 
+                       giveaway_tickets = giveaway_tickets + $3,
+                       total_spent = total_spent + $4 
+                   WHERE telegram_id = $5;""",
+                new_balance, points_earned, tickets_to_add, media['price'], user_id
             )
             await conn.execute(
                 "INSERT INTO purchases (telegram_id, items_summary, total_price) VALUES ($1, $2, $3);",
@@ -238,7 +293,19 @@ async def process_purchase(callback: CallbackQuery):
             )
             
     await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
+
+    # --- ΜΗΝΥΜΑ ΓΙΑ ΤΑ ΕΙΣΙΤΗΡΙΑ ΠΟΥ ΚΕΡΔΙΣΕ ---
+    if tickets_to_add > 0:
+        try:
+            await bot.send_message(
+                user_id, 
+                f"🎉 **Συγχαρητήρια! Πήρες {tickets_to_add} εισιτήριο για την κλήρωση!**", 
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
     
+    # Αποστολή του αρχείου
     if media['media_type'] == "photo":
         await bot.send_photo(chat_id=user_id, photo=media['file_id'], caption="🎉 Ορίστε το αρχείο σου!")
     elif media['media_type'] == "video":
@@ -281,15 +348,15 @@ async def show_profile(message: types.Message):
 
     balance = user['balance']
     points = user['lifetime_points']
+    tickets = user['giveaway_tickets']
     level_title = get_user_level(points)
-    tickets = points // 50
 
     profile_text = (
         f"👤 **Το Προφίλ σου**\n\n"
         f"👛 **Υπόλοιπο:** {balance}€\n"
         f"⭐ **Πόντοι:** {points}\n"
         f"🎖️ **Τίτλος / Επίπεδο:** {level_title}\n"
-        f"🎟️ **Εισιτήρια Κλήρωσης:** {tickets} (1 ανά 50 πόντους)\n\n"
+        f"🎟️ **Εισιτήρια Κλήρωσης:** {tickets}\n\n"
         f"📜 **Πρόσφατες Αγορές:**\n"
     )
 
@@ -304,13 +371,26 @@ async def show_profile(message: types.Message):
 @dp.message(F.text == "🎁 Κλήρωση")
 async def show_giveaway(message: types.Message):
     async with db_pool.acquire() as conn:
-        total_points = await conn.fetchval("SELECT SUM(lifetime_points) FROM users;") or 0
-        total_tickets = total_points // 50
+        settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
+        now = datetime.datetime.now()
+        
+        # Αν έληξε η κλήρωση, μηδενίζει τα εισιτήρια και ξεκινάει νέα 30 ημερών
+        if settings and settings['ends_at'] <= now:
+            await conn.execute("UPDATE users SET giveaway_tickets = 0;")
+            await conn.execute("UPDATE giveaway_settings SET ends_at = NOW() + INTERVAL '30 days' WHERE id = 1;")
+            settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
+
+        total_tickets = await conn.fetchval("SELECT SUM(giveaway_tickets) FROM users;") or 0
+        
+        # Υπολογισμός χρόνου που απομένει
+        remaining_time = settings['ends_at'] - now
+        hours, remainder = divmod(int(remaining_time.total_seconds()), 3600)
+        minutes, _ = divmod(remainder, 60)
 
     text = (
-        f"🎁 **Μηνιαία Μεγάλη Κλήρωση**\n\n"
+        f"🎁 **Μεγάλη Κλήρωση**\n\n"
         f"🎟️ **Συνολικά Εισιτήρια που έχουν δοθεί:** {total_tickets}\n"
-        f"⏳ **Λήξη Κλήρωσης:** Τέλος του τρέχοντος μηνός!\n\n"
+        f"⏳ **Λήξη Κλήρωσης σε:** {hours} ώρες και {minutes} λεπτά!\n\n"
         f"💡 *Κάθε 50 πόντοι (10€ αγορών = 10 πόντοι) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
     )
     await message.answer(text, parse_mode="Markdown")
