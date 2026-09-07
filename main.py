@@ -4,12 +4,16 @@ import os
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 import asyncpg
 
 # --- CONFIGURATION ---
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-DB_URL = "postgresql://db_user:db_password@localhost:5432/db_name"
+TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+DB_URL = os.getenv("DATABASE_URL", "postgresql://db_user:db_password@localhost:5432/db_name")
+
+# Αν το ADMIN_ID δεν έχει μπει ακόμα στο Railway, βάζει προσωρινά 0 για να μην κρασάρει
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 # Links for Support button
 GROUP_LINK = "https://t.me/your_group"
@@ -17,15 +21,19 @@ ADMIN_LINK = "https://t.me/your_username"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-# --- DATABASE SETUP ---
 db_pool = None
 
+# --- FSM STATES FOR ADMIN ---
+class UploadMedia(StatesGroup):
+    waiting_for_file = State()
+    waiting_for_description = State()
+    waiting_for_price = State()
+
+# --- DATABASE SETUP ---
 async def init_db():
     global db_pool
     db_pool = await asyncpg.create_pool(DB_URL)
     async with db_pool.acquire() as connection:
-        # Users Table
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 telegram_id BIGINT PRIMARY KEY,
@@ -35,7 +43,6 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             );
         """)
-        # Purchases History Table
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
@@ -45,12 +52,20 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             );
         """)
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS locked_media (
+                id SERIAL PRIMARY KEY,
+                file_id TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                description TEXT,
+                price NUMERIC(10, 2) NOT NULL
+            );
+        """)
 
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
-    """Υπολογισμός επιπέδου βάσει πόντων (όρια: 150, 300, 500, 1000)"""
     if points >= 1000:
-        return "💎 Diamond (1000+ πόντοι)"  # Μπορείς να αλλάξεις τα ονόματα εδώ
+        return "💎 Diamond (1000+ πόντοι)"
     elif points >= 500:
         return "🥇 Gold (500+ πόντοι)"
     elif points >= 300:
@@ -80,7 +95,116 @@ def support_keyboard():
         ]
     )
 
-# --- HANDLERS ---
+# --- ADMIN HANDLERS ---
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    await message.answer(
+        "👑 Καλωσόρισες στο κρυφό μενού διαχειριστή!\n\n"
+        "Χρησιμοποίησε την εντολή /add_media για να ανεβάσεις νέο κλειδωμένο αρχείο."
+    )
+
+@dp.message(Command("add_media"))
+async def start_upload(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("📤 Στείλε μου τη φωτογραφία ή το βίντεο που θες να κλειδώσουμε:")
+    await state.set_state(UploadMedia.waiting_for_file)
+
+@dp.message(UploadMedia.waiting_for_file, F.photo | F.video)
+async def receive_media(message: types.Message, state: FSMContext):
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        media_type = "photo"
+    else:
+        file_id = message.video.file_id
+        media_type = "video"
+        
+    await state.update_data(file_id=file_id, media_type=media_type)
+    await message.answer("✍️ Γράψε τώρα την περιγραφή που θα βλέπουν οι χρήστες (π.χ. 'Αποκλειστικό Βίντεο'):")
+    await state.set_state(UploadMedia.waiting_for_description)
+
+@dp.message(UploadMedia.waiting_for_description, F.text)
+async def receive_description(message: types.Message, state: FSMContext):
+    await state.update_data(description=message.text)
+    await message.answer("💰 Όρισε την τιμή ξεκλειδώματος σε ευρώ (π.χ. 5.50):")
+    await state.set_state(UploadMedia.waiting_for_price)
+
+@dp.message(UploadMedia.waiting_for_price, F.text)
+async def receive_price(message: types.Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Παρακαλώ γράψε έναν έγκυρο αριθμό (π.χ. 10 ή 5.50).")
+        return
+
+    data = await state.get_data()
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO locked_media (file_id, media_type, description, price) VALUES ($1, $2, $3, $4)",
+            data['file_id'], data['media_type'], data['description'], price
+        )
+        
+    await message.answer("✅ Το κλειδωμένο αρχείο ανέβηκε επιτυχώς στον κατάλογο!")
+    await state.clear()
+
+# --- CATALOG & PURCHASE HANDLERS ---
+@dp.message(F.text == "🛍️ Κατάλογος")
+async def show_catalog(message: types.Message):
+    async with db_pool.acquire() as conn:
+        items = await conn.fetch("SELECT * FROM locked_media;")
+        
+    if not items:
+        await message.answer("Ο κατάλογος είναι άδειος προς το παρόν!")
+        return
+        
+    for item in items:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"🔓 Ξεκλείδωμα ({item['price']}€)", callback_data=f"buy_{item['id']}")]
+        ])
+        await message.answer(f"🔒 **Κλειδωμένο Αρχείο**\n\n📝 {item['description']}", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def process_purchase(callback: CallbackQuery):
+    media_id = int(callback.data.split("_")[1])
+    user_id = callback.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        user = await conn.fetchrow("SELECT balance FROM users WHERE telegram_id = $1;", user_id)
+        media = await conn.fetchrow("SELECT * FROM locked_media WHERE id = $1;", media_id)
+        
+        if not user or not media:
+            await callback.answer("Σφάλμα συστήματος. Δοκίμασε ξανά.", show_alert=True)
+            return
+            
+        if user['balance'] < media['price']:
+            await callback.answer("❌ Δεν έχεις αρκετό υπόλοιπο! Πήγαινε στο Πορτοφόλι.", show_alert=True)
+            return
+            
+        new_balance = user['balance'] - media['price']
+        points_earned = int(media['price']) 
+        
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE users SET balance = $1, lifetime_points = lifetime_points + $2, total_spent = total_spent + $3 WHERE telegram_id = $4;",
+                new_balance, points_earned, media['price'], user_id
+            )
+            await conn.execute(
+                "INSERT INTO purchases (telegram_id, items_summary, total_price) VALUES ($1, $2, $3);",
+                user_id, f"Ξεκλείδωμα αρχείου: {media['description']}", media['price']
+            )
+            
+    await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
+    
+    if media['media_type'] == "photo":
+        await bot.send_photo(chat_id=user_id, photo=media['file_id'], caption="🎉 Ορίστε το αρχείο σου!")
+    elif media['media_type'] == "video":
+        await bot.send_video(chat_id=user_id, video=media['file_id'], caption="🎉 Ορίστε το αρχείο σου!")
+
+# --- USER HANDLERS ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
@@ -90,14 +214,14 @@ async def cmd_start(message: types.Message):
             user_id
         )
     await message.answer(
-        f"Καλωσόρισες, {message.from_user.first_name}!\nΧρησιμοποίησε το μενού παρακάτω για να πλοηγηθείς στο bot.",
+        f"Καλωσόρισες, {message.from_user.first_name}!\nΧρησιμοποίησε το μενού παρακάτω για να πλοηγηθείς.",
         reply_markup=main_menu()
     )
 
 @dp.message(F.text == "👥 Κοινότητα & Επικοινωνία")
 async def show_support(message: types.Message):
     await message.answer(
-        "Μπορείς να συνδεθείς στην κοινότητά μας ή να επικοινωνήσεις απεχευθείας μαζί μας παρακάτω:",
+        "Μπορείς να συνδεθείς στην κοινότητά μας ή να επικοινωνήσεις απευθείας μαζί μας παρακάτω:",
         reply_markup=support_keyboard()
     )
 
@@ -118,7 +242,7 @@ async def show_profile(message: types.Message):
     balance = user['balance']
     points = user['lifetime_points']
     level_title = get_user_level(points)
-    tickets = points // 50  # 1 εισιτήριο ανά 50 πόντους
+    tickets = points // 50
 
     profile_text = (
         f"👤 **Το Προφίλ σου**\n\n"
@@ -140,7 +264,6 @@ async def show_profile(message: types.Message):
 @dp.message(F.text == "🎁 Κλήρωση")
 async def show_giveaway(message: types.Message):
     async with db_pool.acquire() as conn:
-        # Υπολογισμός συνολικών πόντων όλων των χρηστών για να δούμε πόσα συνολικά εισιτήρια έχουν δοθεί
         total_points = await conn.fetchval("SELECT SUM(lifetime_points) FROM users;") or 0
         total_tickets = total_points // 50
 
@@ -148,15 +271,15 @@ async def show_giveaway(message: types.Message):
         f"🎁 **Μηνιαία Μεγάλη Κλήρωση**\n\n"
         f"🎟️ **Συνολικά Εισιτήρια που έχουν δοθεί:** {total_tickets}\n"
         f"⏳ **Λήξη Κλήρωσης:** Τέλος του τρέχοντος μηνός!\n\n"
-        f"💡 *Κάθε 50 πόντοι (10€ αγορών = 10 πόντοι) σου εξασφαλίζουν αυτόματα 1 εισιτήριο για την κλήρωση!*"
+        f"💡 *Κάθε 50 πόντοι (10€ αγορών = 10 πόντοι) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
     )
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "ℹ️ Info")
 async def show_info(message: types.Message):
-    await message.answer("Εδώ μπορείς να προσθέσεις πληροφορίες για σένα, την επιχείρησή σου ή τους όρους χρήσης.")
+    await message.answer("Εδώ προσθέτεις πληροφορίες για το κανάλι ή τους όρους χρήσης.")
 
-# --- MAIN FUNCTION ---
+# --- MAIN EXECUTION ---
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
