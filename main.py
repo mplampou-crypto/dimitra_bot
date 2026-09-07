@@ -103,8 +103,48 @@ async def admin_panel(message: types.Message):
     
     await message.answer(
         "👑 Καλωσόρισες στο κρυφό μενού διαχειριστή!\n\n"
-        "Χρησιμοποίησε την εντολή /add_media για να ανεβάσεις νέο κλειδωμένο αρχείο."
+        "Χρησιμοποίησε την εντολή /add_media για να ανεβάσεις νέο κλειδωμένο αρχείο.\n"
+        "Χρησιμοποίησε /give_money <ID> <Ποσό> για να βάλεις χρήματα σε κάποιον."
     )
+
+@dp.message(Command("give_money"))
+async def admin_give_money(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    args = message.text.split()
+    if len(args) != 3:
+        await message.answer(
+            "⚠️ **Λάθος μορφή!**\nΧρήση: `/give_money <Telegram_ID> <Ποσό>`\nΠαράδειγμα: `/give_money 123456789 50.50`", 
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        target_id = int(args[1])
+        amount = float(args[2].replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Το ID πρέπει να είναι ακέραιος αριθμός και το ποσό να είναι αριθμός (π.χ. 10 ή 10.50).")
+        return
+
+    async with db_pool.acquire() as conn:
+        user_exists = await conn.fetchval("SELECT 1 FROM users WHERE telegram_id = $1;", target_id)
+        
+        if not user_exists:
+            await message.answer("❌ Ο χρήστης με αυτό το ID δεν βρέθηκε στη βάση δεδομένων. Πρέπει να έχει πατήσει /start στο bot.")
+            return
+
+        await conn.execute(
+            "UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;",
+            amount, target_id
+        )
+
+    await message.answer(f"✅ Προστέθηκαν επιτυχώς {amount}€ στο πορτοφόλι του χρήστη {target_id}!")
+    
+    try:
+        await bot.send_message(target_id, f"🎉 **Έκπληξη!**\nΤο υπόλοιπό σου μόλις πιστώθηκε με {amount}€ από τον διαχειριστή!", parse_mode="Markdown")
+    except Exception:
+        pass
 
 @dp.message(Command("add_media"))
 async def start_upload(message: types.Message, state: FSMContext):
