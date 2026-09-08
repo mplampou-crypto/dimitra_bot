@@ -633,22 +633,37 @@ async def show_giveaway(message: types.Message):
         settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
         now = datetime.datetime.now()
         
-        if settings and settings['ends_at'] <= now:
+        # Αν δεν υπάρχουν ρυθμίσεις για κάποιο λόγο, τις δημιουργούμε αυτόματα
+        if not settings:
+            await conn.execute("""
+                INSERT INTO giveaway_settings (id, ends_at) 
+                VALUES (1, NOW() + INTERVAL '30 days') 
+                ON CONFLICT (id) DO NOTHING;
+            """)
+            settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
+
+        # Αν έληξε η κλήρωση, μηδενίζει τα εισιτήρια και ξεκινάει νέα 30 ημερών
+        if settings['ends_at'] <= now:
             await conn.execute("UPDATE users SET giveaway_tickets = 0;")
             await conn.execute("UPDATE giveaway_settings SET ends_at = NOW() + INTERVAL '30 days' WHERE id = 1;")
             settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
 
         total_tickets = await conn.fetchval("SELECT SUM(giveaway_tickets) FROM users;") or 0
         
+        # Υπολογισμός χρόνου που απομένει με ασφαλή διαχείριση
         remaining_time = settings['ends_at'] - now
-        hours, remainder = divmod(int(remaining_time.total_seconds()), 3600)
+        total_seconds = int(remaining_time.total_seconds())
+        if total_seconds < 0:
+            total_seconds = 0
+            
+        hours, remainder = divmod(total_seconds, 3600)
         minutes, _ = divmod(remainder, 60)
 
     text = (
         f"🎁 **Μεγάλη Κλήρωση**\n\n"
         f"🎟️ **Συνολικά Εισιτήρια που έχουν δοθεί:** {total_tickets}\n"
         f"⏳ **Λήξη Κλήρωσης σε:** {hours} ώρες και {minutes} λεπτά!\n\n"
-        f"💡 *Κάθε 50 πόντοι (10€ αγορών = 10 πόντοι) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
+        f"💡 *Κάθε 50 πόντοι (10€ αγορών) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
     )
     await message.answer(text, parse_mode="Markdown")
 
