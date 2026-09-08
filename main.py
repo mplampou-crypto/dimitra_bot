@@ -35,8 +35,8 @@ class PaySafeTopUp(StatesGroup):
     waiting_for_amount = State()
     waiting_for_code = State()
 
-# --- FSM STATES FOR CARD / CRYPTO (NOWPAYMENTS) ---
-class CardTopUp(StatesGroup):
+# --- FSM STATES FOR NOWPAYMENTS ---
+class CryptoTopUp(StatesGroup):
     waiting_for_amount = State()
 
 # --- DATABASE SETUP ---
@@ -251,7 +251,7 @@ async def show_wallet(message: types.Message):
     text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Κατάθεση με Κάρτα (NOWPayments LTC)", callback_data="card_start")],
+        [InlineKeyboardButton(text="💳 Κατάθεση με Κάρτα / Crypto (NOWPayments)", callback_data="crypto_start")],
         [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
@@ -345,15 +345,15 @@ async def admin_reject_paysafe(callback: CallbackQuery):
     await callback.answer("Απορρίφθηκε!")
 
 
-# --- CARD / NOWPAYMENTS (LTC Payout) FLOW ---
-@dp.callback_query(F.data == "card_start")
-async def card_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις με κάρτα (π.χ. 10 ή 25):", parse_mode="Markdown")
-    await state.set_state(CardTopUp.waiting_for_amount)
+# --- NOWPAYMENTS INVOICE FLOW ---
+@dp.callback_query(F.data == "crypto_start")
+async def crypto_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις (π.χ. 10 ή 25):", parse_mode="Markdown")
+    await state.set_state(CryptoTopUp.waiting_for_amount)
     await callback.answer()
 
-@dp.message(CardTopUp.waiting_for_amount, F.text)
-async def process_card_amount(message: types.Message, state: FSMContext):
+@dp.message(CryptoTopUp.waiting_for_amount, F.text)
+async def process_crypto_amount(message: types.Message, state: FSMContext):
     try:
         amount = float(message.text.replace(",", "."))
         if amount <= 0:
@@ -372,27 +372,30 @@ async def process_card_amount(message: types.Message, state: FSMContext):
         "x-api-key": NOWPAYMENTS_API_KEY,
         "Content-Type": "application/json"
     }
-    # Ορίζουμε pay_currency="ltc" ώστε να λαμβάνεις LTC στο πορτοφόλι σου
+    
+    # Σωστή δομή αιτήματος για Invoice (δεν ορίζουμε pay_currency ώστε ο χρήστης να επιλέγει κάρτα/crypto)
     payload = {
         "price_amount": amount,
-        "price_currency": "eur",
-        "pay_currency": "ltc",
-        "purchase_id": f"user_{user_id}_card_{amount}",
-        "order_description": f"Card Top-up {amount} EUR (LTC)"
+        "price_currency": "EUR",
+        "order_id": f"user_{user_id}_topup_{amount}",
+        "order_description": f"Wallet Top-up {amount} EUR"
     }
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as response:
+            response_text = await response.text()
+            logging.info(f"NOWPayments Response [{response.status}]: {response_text}")
+            
             if response.status in [200, 201]:
                 data = await response.json()
                 invoice_url = data.get("invoice_url")
                 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=f"💳 Πληρωμή {amount}€ με Κάρτα", url=invoice_url)]
+                    [InlineKeyboardButton(text=f"💳 Πληρωμή {amount}€", url=invoice_url)]
                 ])
                 await message.answer(
-                    f"🔗 Δημιουργήθηκε ο σύνδεσμος πληρωμής με κάρτα για **{amount}€**.\n\n"
-                    f"Πάτα το παρακάτω κουμπί για να πληρώσεις:",
+                    f"🔗 Δημιουργήθηκε ο σύνδεσμος πληρωμής για **{amount}€**.\n\n"
+                    f"Πάτα το παρακάτω κουμπί για να πληρώσεις (με κάρτα ή crypto):",
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
