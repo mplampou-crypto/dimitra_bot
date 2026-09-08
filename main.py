@@ -35,8 +35,8 @@ class PaySafeTopUp(StatesGroup):
     waiting_for_amount = State()
     waiting_for_code = State()
 
-# --- FSM STATES FOR CRYPTO (NOWPAYMENTS) ---
-class CryptoTopUp(StatesGroup):
+# --- FSM STATES FOR CARD (NOWPAYMENTS FIAT) ---
+class CardTopUp(StatesGroup):
     waiting_for_amount = State()
 
 # --- DATABASE SETUP ---
@@ -251,8 +251,8 @@ async def show_wallet(message: types.Message):
     text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe", callback_data="paysafe_start")],
-        [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto (NOWPayments)", callback_data="crypto_start")]
+        [InlineKeyboardButton(text="💳 Κατάθεση με Κάρτα (NOWPayments)", callback_data="card_start")],
+        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
@@ -345,15 +345,15 @@ async def admin_reject_paysafe(callback: CallbackQuery):
     await callback.answer("Απορρίφθηκε!")
 
 
-# --- CRYPTO (NOWPAYMENTS) FLOW ---
-@dp.callback_query(F.data == "crypto_start")
-async def crypto_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις (π.χ. 10 ή 25.50):", parse_mode="Markdown")
-    await state.set_state(CryptoTopUp.waiting_for_amount)
+# --- CARD (NOWPAYMENTS FIAT-ON-RAMP) FLOW ---
+@dp.callback_query(F.data == "card_start")
+async def card_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις με κάρτα (π.χ. 10 ή 25):", parse_mode="Markdown")
+    await state.set_state(CardTopUp.waiting_for_amount)
     await callback.answer()
 
-@dp.message(CryptoTopUp.waiting_for_amount, F.text)
-async def process_crypto_amount(message: types.Message, state: FSMContext):
+@dp.message(CardTopUp.waiting_for_amount, F.text)
+async def process_card_amount(message: types.Message, state: FSMContext):
     try:
         amount = float(message.text.replace(",", "."))
         if amount <= 0:
@@ -372,12 +372,14 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
         "x-api-key": NOWPAYMENTS_API_KEY,
         "Content-Type": "application/json"
     }
+    # Με τη ρύθμιση αυτή, το NOWPayments επιτρέπει στον πελάτη να πληρώσει με κάρτα (Fiat) 
+    # και εσύ λαμβάνεις το αντίστοιχo USDT TRC20 στο πορτοφόλι σου.
     payload = {
         "price_amount": amount,
         "price_currency": "eur",
-        "pay_currency": "usdttrc20", 
-        "order_id": f"user_{user_id}_topup_{amount}",
-        "order_description": f"Top-up {amount} EUR"
+        "pay_currency": "usdttrc20",
+        "purchase_id": f"user_{user_id}_card_{amount}",
+        "order_description": f"Card Top-up {amount} EUR"
     }
     
     async with aiohttp.ClientSession() as session:
@@ -387,16 +389,16 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
                 invoice_url = data.get("invoice_url")
                 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=f"💳 Πληρωμή {amount}€ με Crypto", url=invoice_url)]
+                    [InlineKeyboardButton(text=f"💳 Πληρωμή {amount}€ με Κάρτα", url=invoice_url)]
                 ])
                 await message.answer(
-                    f"🔗 Δημιουργήθηκε ο σύνδεσμος πληρωμής για **{amount}€**.\n\n"
-                    f"Πάτα το παρακάτω κουμπί για να ολοκληρώσεις την κατάθεση μέσω NOWPayments:",
+                    f"🔗 Δημιουργήθηκε ο σύνδεσμος πληρωμής με κάρτα για **{amount}€**.\n\n"
+                    f"Πάτα το παρακάτω κουμπί για να πληρώσεις:",
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
             else:
-                await message.answer("❌ Σφάλμα επικοινωνίας με το NOWPayments. Δοκιμάστε αργότερα.")
+                await message.answer("❌ Σφάλμα επικοινωνίας με την υπηρεσία πληρωμών. Δοκιμάστε αργότερα.")
     
     await state.clear()
 
