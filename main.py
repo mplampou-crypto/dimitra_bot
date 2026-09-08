@@ -35,7 +35,7 @@ class PaySafeTopUp(StatesGroup):
     waiting_for_amount = State()
     waiting_for_code = State()
 
-# --- FSM STATES FOR NOWPAYMENTS ---
+# --- FSM STATES FOR AUTOMATED CRYPTO (NOWPAYMENTS) ---
 class CryptoTopUp(StatesGroup):
     waiting_for_amount = State()
 
@@ -251,13 +251,13 @@ async def show_wallet(message: types.Message):
     text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Κατάθεση με Κάρτα / Crypto (NOWPayments)", callback_data="crypto_start")],
-        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe", callback_data="paysafe_start")]
+        [InlineKeyboardButton(text="⚡ Αυτόματη Κατάθεση με Crypto", callback_data="crypto_start")],
+        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe (Χειροκίνητη)", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
-# --- PAYSAFE FLOW ---
+# --- PAYSAFE FLOW (Χειροκίνητη με Accept/Reject) ---
 @dp.callback_query(F.data == "paysafe_start")
 async def paysafe_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("💶 **Πληκτρολόγησε το ποσό** που θέλεις να καταθέσεις (π.χ. 10 ή 20):", parse_mode="Markdown")
@@ -345,7 +345,7 @@ async def admin_reject_paysafe(callback: CallbackQuery):
     await callback.answer("Απορρίφθηκε!")
 
 
-# --- NOWPAYMENTS INVOICE FLOW ---
+# --- AUTOMATED CRYPTO FLOW (NOWPAYMENTS) ---
 @dp.callback_query(F.data == "crypto_start")
 async def crypto_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις (π.χ. 10 ή 25):", parse_mode="Markdown")
@@ -373,11 +373,11 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
         "Content-Type": "application/json"
     }
     
-    # Σωστή δομή αιτήματος για Invoice (δεν ορίζουμε pay_currency ώστε ο χρήστης να επιλέγει κάρτα/crypto)
     payload = {
         "price_amount": amount,
         "price_currency": "EUR",
-        "order_id": f"user_{user_id}_topup_{amount}",
+        "pay_currency": "ltc",
+        "order_id": f"user_{user_id}_crypto_{amount}",
         "order_description": f"Wallet Top-up {amount} EUR"
     }
     
@@ -391,11 +391,11 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
                 invoice_url = data.get("invoice_url")
                 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=f"💳 Πληρωμή {amount}€", url=invoice_url)]
+                    [InlineKeyboardButton(text=f"⚡ Πληρωμή {amount}€ με Crypto", url=invoice_url)]
                 ])
                 await message.answer(
-                    f"🔗 Δημιουργήθηκε ο σύνδεσμος πληρωμής για **{amount}€**.\n\n"
-                    f"Πάτα το παρακάτω κουμπί για να πληρώσεις (με κάρτα ή crypto):",
+                    f"🔗 Δημιουργήθηκε ο αυτόματος σύνδεσμος πληρωμής για **{amount}€**.\n\n"
+                    f"Πάτα το παρακάτω κουμπί για να πληρώσεις με κρυπτονομίσματα:",
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
