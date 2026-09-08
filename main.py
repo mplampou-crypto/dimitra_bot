@@ -30,6 +30,15 @@ class UploadMedia(StatesGroup):
     waiting_for_description = State()
     waiting_for_price = State()
 
+# --- FSM STATES FOR PAYSAFE ---
+class PaySafeTopUp(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_code = State()
+
+# --- FSM STATES FOR CRYPTO (NOWPAYMENTS) ---
+class CryptoTopUp(StatesGroup):
+    waiting_for_amount = State()
+
 # --- DATABASE SETUP ---
 async def init_db():
     global db_pool
@@ -61,6 +70,14 @@ async def init_db():
                 media_type TEXT NOT NULL,
                 description TEXT,
                 price NUMERIC(10, 2) NOT NULL
+            );
+        """)
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS cart (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                media_id INT,
+                added_at TIMESTAMP DEFAULT NOW()
             );
         """)
         await connection.execute("""
@@ -108,19 +125,12 @@ def support_keyboard():
         ]
     )
 
-def topup_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💶 5€", callback_data="topup_5"), InlineKeyboardButton(text="💶 10€", callback_data="topup_10")],
-            [InlineKeyboardButton(text="💶 20€", callback_data="topup_20"), InlineKeyboardButton(text="💶 50€", callback_data="topup_50")]
-        ]
-    )
-
 # --- ADMIN HANDLERS ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
+    
     await message.answer(
         "👑 Καλωσόρισες στο κρυφό μενού διαχειριστή!\n\n"
         "📜 /add_media - Ανέβασμα κλειδωμένου αρχείου\n"
@@ -132,10 +142,12 @@ async def admin_panel(message: types.Message):
 async def set_giveaway_timer(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
+
     args = message.text.split()
     if len(args) != 2:
         await message.answer("⚠️ Χρήση: `/set_giveaway <ώρες>`", parse_mode="Markdown")
         return
+
     try:
         hours = float(args[1].replace(",", "."))
     except ValueError:
@@ -143,35 +155,45 @@ async def set_giveaway_timer(message: types.Message):
         return
 
     async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE giveaway_settings SET ends_at = NOW() + ($1 * INTERVAL '1 hour') WHERE id = 1;", hours)
+        await conn.execute(
+            "UPDATE giveaway_settings SET ends_at = NOW() + ($1 * INTERVAL '1 hour') WHERE id = 1;",
+            hours
+        )
         await conn.execute("UPDATE users SET giveaway_tickets = 0;")
-    await message.answer(f"✅ Η κλήρωση ρυθμίστηκε να λήγει σε {hours} ώρες. Τα εισιτήρια μηδενίστηκαν!")
+
+    await message.answer(f"✅ Η κλήρωση ρυθμίστηκε να λήγει σε {hours} ώρες. Τα εισιτήρια μηδενίστηκαν και ξεκινάμε νέα κλήρωση!")
 
 @dp.message(Command("give_money"))
 async def admin_give_money(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
+
     args = message.text.split()
     if len(args) != 3:
-        await message.answer("⚠️ **Λάθος μορφή!**\nΧρήση: `/give_money <Telegram_ID> <Ποσό>`", parse_mode="Markdown")
+        await message.answer(
+            "⚠️ **Λάθος μορφή!**\nΧρήση: `/give_money <Telegram_ID> <Ποσό>`", 
+            parse_mode="Markdown"
+        )
         return
+
     try:
         target_id = int(args[1])
         amount = float(args[2].replace(",", "."))
     except ValueError:
-        await message.answer("❌ Το ID πρέπει να είναι ακέραιος αριθμός και το ποσό αριθμός.")
+        await message.answer("❌ Το ID πρέπει να είναι ακέραιος αριθμός και το ποσό να είναι αριθμός (π.χ. 10 ή 10.50).")
         return
 
     async with db_pool.acquire() as conn:
         user_exists = await conn.fetchval("SELECT 1 FROM users WHERE telegram_id = $1;", target_id)
         if not user_exists:
-            await message.answer("❌ Ο χρήστης δεν βρέθηκε. Πρέπει να έχει πατήσει /start.")
+            await message.answer("❌ Ο χρήστης δεν βρέθηκε στη βάση δεδομένων. Πρέπει να έχει πατήσει /start.")
             return
+
         await conn.execute("UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;", amount, target_id)
 
     await message.answer(f"✅ Προστέθηκαν επιτυχώς {amount}€ στο πορτοφόλι του χρήστη {target_id}!")
     try:
-        await bot.send_message(target_id, f"🎉 **Έκπληξη!**\nΤο υπόλοιπό σου πιστώθηκε με {amount}€ από τον διαχειριστή!", parse_mode="Markdown")
+        await bot.send_message(target_id, f"🎉 **Έκπληξη!**\nΤο υπόλοιπό σου μόλις πιστώθηκε με {amount}€ από τον διαχειριστή!", parse_mode="Markdown")
     except Exception:
         pass
 
@@ -190,8 +212,9 @@ async def receive_media(message: types.Message, state: FSMContext):
     else:
         file_id = message.video.file_id
         media_type = "video"
+        
     await state.update_data(file_id=file_id, media_type=media_type)
-    await message.answer("✍️ Γράψε τώρα την περιγραφή:")
+    await message.answer("✍️ Γράψε τώρα την περιγραφή που θα βλέπουν οι χρήστες:")
     await state.set_state(UploadMedia.waiting_for_description)
 
 @dp.message(UploadMedia.waiting_for_description, F.text)
@@ -207,32 +230,143 @@ async def receive_price(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Παρακαλώ γράψε έναν έγκυρο αριθμό (π.χ. 10 ή 5.50).")
         return
+
     data = await state.get_data()
     async with db_pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO locked_media (file_id, media_type, description, price) VALUES ($1, $2, $3, $4)",
             data['file_id'], data['media_type'], data['description'], price
         )
+        
     await message.answer("✅ Το κλειδωμένο αρχείο ανέβηκε επιτυχώς στον κατάλογο!")
     await state.clear()
 
-# --- NOWPAYMENTS WALLET TOP-UP ---
+
+# --- WALLET & TOP-UP HANDLERS ---
 @dp.message(F.text == "👛 Πορτοφόλι")
 async def show_wallet(message: types.Message):
     async with db_pool.acquire() as conn:
         balance = await conn.fetchval("SELECT balance FROM users WHERE telegram_id = $1;", message.from_user.id)
     
-    text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε ποσό κατάθεσης (Crypto):"
-    await message.answer(text, parse_mode="Markdown", reply_markup=topup_keyboard())
+    text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe", callback_data="paysafe_start")],
+        [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto (NOWPayments)", callback_data="crypto_start")]
+    ])
+    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("topup_"))
-async def process_crypto_topup(callback: CallbackQuery):
+
+# --- PAYSAFE FLOW ---
+@dp.callback_query(F.data == "paysafe_start")
+async def paysafe_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό** που θέλεις να καταθέσεις (π.χ. 10 ή 20):", parse_mode="Markdown")
+    await state.set_state(PaySafeTopUp.waiting_for_amount)
+    await callback.answer()
+
+@dp.message(PaySafeTopUp.waiting_for_amount, F.text)
+async def process_paysafe_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text.replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        return await message.answer("❌ Μη έγκυρο ποσό. Σε παρακαλώ γράψε έναν αριθμό (π.χ. 10):")
+    
+    await state.update_data(amount=amount)
+    await message.answer("🔢 **Τώρα γράψε τον 12-ψήφιο κωδικό της PaySafe σου:**\n*(Πρέπει να είναι ακριβώς 12 νούμερα χωρίς κενά)*", parse_mode="Markdown")
+    await state.set_state(PaySafeTopUp.waiting_for_code)
+
+@dp.message(PaySafeTopUp.waiting_for_code, F.text)
+async def process_paysafe_code(message: types.Message, state: FSMContext):
+    code = message.text.strip().replace(" ", "")
+    
+    if len(code) != 12 or not code.isdigit():
+        return await message.answer("❌ ΛΑΘΟΣ! Ο κωδικός πρέπει να αποτελείται από **ακριβώς 12 νούμερα**.\n\nΠροσπάθησε ξανά:", parse_mode="Markdown")
+    
+    data = await state.get_data()
+    amount = data['amount']
+    
+    admin_text = (
+        f"🔔 **ΝΕΟ ΑΙΤΗΜΑ PAYSAFE** 🔔\n\n"
+        f"👤 Χρήστης ID: `{message.from_user.id}`\n"
+        f"💰 Ποσό: **{amount}€**\n"
+        f"🔢 Κωδικός: `{code}`"
+    )
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Accept", callback_data=f"ps_acc_{message.from_user.id}_{amount}"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"ps_rej_{message.from_user.id}")
+        ]
+    ])
+    
+    try:
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
+        await message.answer("✅ Το αίτημά σου στάλθηκε επιτυχώς! Μόλις ο διαχειριστής επιβεβαιώσει τον κωδικό, τα χρήματα θα μπουν στο πορτοφόλι σου.")
+    except Exception as e:
+        await message.answer("❌ Υπήρξε ένα σφάλμα κατά την αποστολή. Δοκίμασε ξανά αργότερα.")
+        logging.error(f"PaySafe sending to admin failed: {e}")
+    
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("ps_acc_"))
+async def admin_accept_paysafe(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    
+    parts = callback.data.split("_")
+    user_id = int(parts[2])
+    amount = float(parts[3])
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;", amount, user_id)
+        
+    await callback.message.edit_text(callback.message.text + "\n\n✅ **ΑΠΟΔΕΚΤΟ - Τα χρήματα πιστώθηκαν!**")
+    try:
+        await bot.send_message(user_id, f"🎉 **Συγχαρητήρια!** Η κατάθεση PaySafe εγκρίθηκε. **Προστέθηκαν {amount}€** στο πορτοφόλι σου!", parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer("Εγκρίθηκε!")
+
+@dp.callback_query(F.data.startswith("ps_rej_"))
+async def admin_reject_paysafe(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    
+    parts = callback.data.split("_")
+    user_id = int(parts[2])
+    
+    await callback.message.edit_text(callback.message.text + "\n\n❌ **ΑΠΟΡΡΙΦΘΗΚΕ!**")
+    try:
+        await bot.send_message(user_id, "❌ Το αίτημα κατάθεσης PaySafe **απορρίφθηκε**. Ο κωδικός ήταν λανθασμένος ή έχει ήδη χρησιμοποιηθεί.", parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer("Απορρίφθηκε!")
+
+
+# --- CRYPTO (NOWPAYMENTS) FLOW ---
+@dp.callback_query(F.data == "crypto_start")
+async def crypto_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις (π.χ. 10 ή 25.50):", parse_mode="Markdown")
+    await state.set_state(CryptoTopUp.waiting_for_amount)
+    await callback.answer()
+
+@dp.message(CryptoTopUp.waiting_for_amount, F.text)
+async def process_crypto_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text.replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        return await message.answer("❌ Μη έγκυρο ποσό. Σε παρακαλώ γράψε έναν αριθμό (π.χ. 10):")
+    
+    user_id = message.from_user.id
+    
     if not NOWPAYMENTS_API_KEY:
-        return await callback.answer("❌ Το NOWPayments API Key δεν έχει ρυθμιστεί στο Railway.", show_alert=True)
-    
-    amount = int(callback.data.split("_")[1])
-    user_id = callback.from_user.id
-    
+        await state.clear()
+        return await message.answer("❌ Το NOWPayments API Key δεν έχει ρυθμιστεί στο Railway.", parse_mode="Markdown")
+
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {
         "x-api-key": NOWPAYMENTS_API_KEY,
@@ -253,36 +387,109 @@ async def process_crypto_topup(callback: CallbackQuery):
                 invoice_url = data.get("invoice_url")
                 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=f"💳 Πληρωμή {amount}€", url=invoice_url)]
+                    [InlineKeyboardButton(text=f"💳 Πληρωμή {amount}€ με Crypto", url=invoice_url)]
                 ])
-                await callback.message.answer(
-                    f"🔗 Δημιουργήθηκε ο σύνδεσμος πληρωμής για **{amount}€**.\n"
-                    f"Πάτα το παρακάτω κουμπί για να πληρώσεις μέσω NOWPayments:",
+                await message.answer(
+                    f"🔗 Δημιουργήθηκε ο σύνδεσμος πληρωμής για **{amount}€**.\n\n"
+                    f"Πάτα το παρακάτω κουμπί για να ολοκληρώσεις την κατάθεση μέσω NOWPayments:",
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
             else:
-                await callback.message.answer("❌ Σφάλμα επικοινωνίας με το NOWPayments. Δοκιμάστε αργότερα.")
+                await message.answer("❌ Σφάλμα επικοινωνίας με το NOWPayments. Δοκιμάστε αργότερα.")
     
-    await callback.answer()
+    await state.clear()
 
-# --- CATALOG & PURCHASE HANDLERS ---
+
+# --- CATALOG & CART HANDLERS ---
 @dp.message(F.text == "🛍️ Κατάλογος")
 async def show_catalog(message: types.Message):
     async with db_pool.acquire() as conn:
         items = await conn.fetch("SELECT * FROM locked_media;")
+        
     if not items:
         await message.answer("Ο κατάλογος είναι άδειος προς το παρόν!")
         return
+        
     for item in items:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"🔓 Ξεκλείδωμα ({item['price']}€)", callback_data=f"buy_{item['id']}")]
+            [InlineKeyboardButton(text=f"🛒 Προσθήκη στο Καλάθι ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
         ])
         await message.answer(f"🔒 **Κλειδωμένο Αρχείο**\n\n📝 {item['description']}", reply_markup=keyboard)
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def process_purchase(callback: CallbackQuery):
+@dp.callback_query(F.data.startswith("addcart_"))
+async def process_add_to_cart(callback: CallbackQuery):
     media_id = int(callback.data.split("_")[1])
+    user_id = callback.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        exists = await conn.fetchval("SELECT 1 FROM cart WHERE telegram_id = $1 AND media_id = $2;", user_id, media_id)
+        if exists:
+            await callback.answer("⚠️ Το έχεις ήδη προσθέσει στο καλάθι σου!", show_alert=True)
+            return
+        await conn.execute("INSERT INTO cart (telegram_id, media_id) VALUES ($1, $2);", user_id, media_id)
+        
+    await callback.answer("✅ Προστέθηκε στο καλάθι!", show_alert=False)
+
+@dp.message(F.text == "🛒 Καλάθι")
+async def show_cart(message: types.Message):
+    user_id = message.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        cart_items = await conn.fetch("""
+            SELECT c.id as cart_id, m.id as media_id, m.description, m.price 
+            FROM cart c
+            JOIN locked_media m ON c.media_id = m.id
+            WHERE c.telegram_id = $1;
+        """, user_id)
+        
+    if not cart_items:
+        await message.answer("🛒 Το καλάθι σου είναι άδειο!")
+        return
+        
+    total_price = sum(item['price'] for item in cart_items)
+    
+    text = "🛒 **Το Καλάθι σου:**\n\n"
+    for item in cart_items:
+        text += f"🔹 {item['description']} - **{item['price']}€**\n"
+        
+    text += f"\n💰 **Συνολικό Ποσό:** {total_price}€\n\nΜπορείς να αφαιρέσεις προϊόντα με τα παρακάτω κουμπιά:"
+    
+    inline_keyboard = []
+    for item in cart_items:
+        inline_keyboard.append([
+            InlineKeyboardButton(text=f"❌ Αφαίρεση {item['description']}", callback_data=f"removecart_{item['cart_id']}")
+        ])
+    
+    inline_keyboard.append([InlineKeyboardButton(text=f"💳 Αγορά Όλων ({total_price}€)", callback_data="checkout")])
+    inline_keyboard.append([InlineKeyboardButton(text="🗑 Άδειασμα Καλαθιού", callback_data="clearcart")])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+    
+    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("removecart_"))
+async def process_remove_from_cart(callback: CallbackQuery):
+    cart_id = int(callback.data.split("_")[1])
+    user_id = callback.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM cart WHERE id = $1 AND telegram_id = $2;", cart_id, user_id)
+        
+    await callback.answer("❌ Το προϊόν αφαιρέθηκε από το καλάθι!", show_alert=False)
+    await show_cart(callback.message)
+
+@dp.callback_query(F.data == "clearcart")
+async def process_clear_cart(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM cart WHERE telegram_id = $1;", user_id)
+        
+    await callback.answer("🗑 Το καλάθι σου άδειασε!", show_alert=True)
+    await callback.message.edit_text("🛒 Το καλάθι σου είναι πλέον άδειο.")
+
+@dp.callback_query(F.data == "checkout")
+async def process_checkout(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     async with db_pool.acquire() as conn:
@@ -291,19 +498,35 @@ async def process_purchase(callback: CallbackQuery):
             await conn.execute("UPDATE users SET giveaway_tickets = 0;")
             await conn.execute("UPDATE giveaway_settings SET ends_at = NOW() + INTERVAL '30 days' WHERE id = 1;")
 
-        user = await conn.fetchrow("SELECT balance, lifetime_points FROM users WHERE telegram_id = $1;", user_id)
-        media = await conn.fetchrow("SELECT * FROM locked_media WHERE id = $1;", media_id)
+        cart_items = await conn.fetch("""
+            SELECT m.description, m.price, m.media_type, m.file_id
+            FROM cart c
+            JOIN locked_media m ON c.media_id = m.id
+            WHERE c.telegram_id = $1;
+        """, user_id)
         
-        if not user or not media:
-            return await callback.answer("Σφάλμα συστήματος. Δοκίμασε ξανά.", show_alert=True)
-        if user['balance'] < media['price']:
-            return await callback.answer("❌ Δεν έχεις αρκετό υπόλοιπο! Πήγαινε στο Πορτοφόλι.", show_alert=True)
+        if not cart_items:
+            await callback.answer("⚠️ Το καλάθι σου είναι άδειο.", show_alert=True)
+            return
             
-        new_balance = user['balance'] - media['price']
-        points_earned = int(media['price']) 
+        total_price = sum(item['price'] for item in cart_items)
+        user = await conn.fetchrow("SELECT balance, lifetime_points FROM users WHERE telegram_id = $1;", user_id)
+        
+        if not user:
+            await callback.answer("Σφάλμα συστήματος.", show_alert=True)
+            return
+            
+        if user['balance'] < total_price:
+            await callback.answer(f"❌ Δεν έχεις αρκετό υπόλοιπο! (Χρειάζεσαι {total_price}€)\nΠήγαινε στο Πορτοφόλι.", show_alert=True)
+            return
+            
+        new_balance = user['balance'] - total_price
+        points_earned = int(total_price) 
         old_points = user['lifetime_points']
         new_total_points = old_points + points_earned
+        
         tickets_to_add = (new_total_points // 50) - (old_points // 50)
+        items_summary = ", ".join([item['description'] for item in cart_items])
 
         async with conn.transaction():
             await conn.execute(
@@ -313,47 +536,70 @@ async def process_purchase(callback: CallbackQuery):
                        giveaway_tickets = giveaway_tickets + $3,
                        total_spent = total_spent + $4 
                    WHERE telegram_id = $5;""",
-                new_balance, points_earned, tickets_to_add, media['price'], user_id
+                new_balance, points_earned, tickets_to_add, total_price, user_id
             )
             await conn.execute(
                 "INSERT INTO purchases (telegram_id, items_summary, total_price) VALUES ($1, $2, $3);",
-                user_id, f"Ξεκλείδωμα αρχείου: {media['description']}", media['price']
+                user_id, f"Αγορά καλαθιού: {items_summary}", total_price
             )
+            await conn.execute("DELETE FROM cart WHERE telegram_id = $1;", user_id)
             
     await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
+    await callback.message.edit_text("✅ Η αγορά ολοκληρώθηκε με επιτυχία! Ακολουθούν τα αρχεία σου...")
 
     if tickets_to_add > 0:
         try:
-            await bot.send_message(user_id, f"🎉 **Συγχαρητήρια! Πήρες {tickets_to_add} εισιτήριο για την κλήρωση!**", parse_mode="Markdown")
+            await bot.send_message(
+                user_id, 
+                f"🎉 **Συγχαρητήρια! Πήρες {tickets_to_add} εισιτήριο(α) για την κλήρωση!**", 
+                parse_mode="Markdown"
+            )
         except Exception:
             pass
     
-    if media['media_type'] == "photo":
-        await bot.send_photo(chat_id=user_id, photo=media['file_id'], caption="🎉 Ορίστε το αρχείο σου!")
-    elif media['media_type'] == "video":
-        await bot.send_video(chat_id=user_id, video=media['file_id'], caption="🎉 Ορίστε το αρχείο σου!")
+    for item in cart_items:
+        try:
+            if item['media_type'] == "photo":
+                await bot.send_photo(chat_id=user_id, photo=item['file_id'], caption=f"🎉 {item['description']}")
+            elif item['media_type'] == "video":
+                await bot.send_video(chat_id=user_id, video=item['file_id'], caption=f"🎉 {item['description']}")
+        except Exception as e:
+            logging.error(f"Error sending file to {user_id}: {e}")
 
 # --- USER HANDLERS ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO users (telegram_id) VALUES ($1) ON CONFLICT (telegram_id) DO NOTHING;", user_id)
-    await message.answer(f"Καλωσόρισες, {message.from_user.first_name}!\nΧρησιμοποίησε το μενού παρακάτω για να πλοηγηθείς.", reply_markup=main_menu())
+        await conn.execute(
+            "INSERT INTO users (telegram_id) VALUES ($1) ON CONFLICT (telegram_id) DO NOTHING;",
+            user_id
+        )
+    await message.answer(
+        f"Καλωσόρισες, {message.from_user.first_name}!\nΧρησιμοποίησε το μενού παρακάτω για να πλοηγηθείς.",
+        reply_markup=main_menu()
+    )
 
 @dp.message(F.text == "👥 Κοινότητα & Επικοινωνία")
 async def show_support(message: types.Message):
-    await message.answer("Μπορείς να συνδεθείς στην κοινότητά μας ή να επικοινωνήσεις απευθείας μαζί μας παρακάτω:", reply_markup=support_keyboard())
+    await message.answer(
+        "Μπορείς να συνδεθείς στην κοινότητά μας ή να επικοινωνήσεις απευθείας μαζί μας παρακάτω:",
+        reply_markup=support_keyboard()
+    )
 
 @dp.message(F.text == "👤 Το Προφίλ μου")
 async def show_profile(message: types.Message):
     user_id = message.from_user.id
     async with db_pool.acquire() as conn:
         user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
-        purchases = await conn.fetch("SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;", user_id)
+        purchases = await conn.fetch(
+            "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
+            user_id
+        )
 
     if not user:
-        return await message.answer("Δεν βρέθηκαν στοιχεία προφίλ. Πληκτρολογήστε /start.")
+        await message.answer("Δεν βρέθηκαν στοιχεία προφίλ. Πληκτρολογήστε /start.")
+        return
 
     balance = user['balance']
     points = user['lifetime_points']
@@ -374,6 +620,7 @@ async def show_profile(message: types.Message):
             profile_text += f"- {p['items_summary']} ({p['total_price']}€) στις {p['created_at'].strftime('%d/%m %H:%M')}\n"
     else:
         profile_text += "Δεν έχεις κάνει κάποια αγορά ακόμα."
+
     await message.answer(profile_text, parse_mode="Markdown")
 
 @dp.message(F.text == "🎁 Κλήρωση")
@@ -388,6 +635,7 @@ async def show_giveaway(message: types.Message):
             settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
 
         total_tickets = await conn.fetchval("SELECT SUM(giveaway_tickets) FROM users;") or 0
+        
         remaining_time = settings['ends_at'] - now
         hours, remainder = divmod(int(remaining_time.total_seconds()), 3600)
         minutes, _ = divmod(remainder, 60)
