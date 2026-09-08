@@ -35,7 +35,7 @@ class PaySafeTopUp(StatesGroup):
     waiting_for_amount = State()
     waiting_for_code = State()
 
-# --- FSM STATES FOR CARD (NOWPAYMENTS FIAT) ---
+# --- FSM STATES FOR CARD / CRYPTO (NOWPAYMENTS) ---
 class CardTopUp(StatesGroup):
     waiting_for_amount = State()
 
@@ -251,7 +251,7 @@ async def show_wallet(message: types.Message):
     text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Κατάθεση με Κάρτα (NOWPayments)", callback_data="card_start")],
+        [InlineKeyboardButton(text="💳 Κατάθεση με Κάρτα (NOWPayments LTC)", callback_data="card_start")],
         [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
@@ -345,7 +345,7 @@ async def admin_reject_paysafe(callback: CallbackQuery):
     await callback.answer("Απορρίφθηκε!")
 
 
-# --- CARD (NOWPAYMENTS FIAT-ON-RAMP) FLOW ---
+# --- CARD / NOWPAYMENTS (LTC Payout) FLOW ---
 @dp.callback_query(F.data == "card_start")
 async def card_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις με κάρτα (π.χ. 10 ή 25):", parse_mode="Markdown")
@@ -372,14 +372,13 @@ async def process_card_amount(message: types.Message, state: FSMContext):
         "x-api-key": NOWPAYMENTS_API_KEY,
         "Content-Type": "application/json"
     }
-    # Με τη ρύθμιση αυτή, το NOWPayments επιτρέπει στον πελάτη να πληρώσει με κάρτα (Fiat) 
-    # και εσύ λαμβάνεις το αντίστοιχo USDT TRC20 στο πορτοφόλι σου.
+    # Ορίζουμε pay_currency="ltc" ώστε να λαμβάνεις LTC στο πορτοφόλι σου
     payload = {
         "price_amount": amount,
         "price_currency": "eur",
-        "pay_currency": "usdttrc20",
+        "pay_currency": "ltc",
         "purchase_id": f"user_{user_id}_card_{amount}",
-        "order_description": f"Card Top-up {amount} EUR"
+        "order_description": f"Card Top-up {amount} EUR (LTC)"
     }
     
     async with aiohttp.ClientSession() as session:
