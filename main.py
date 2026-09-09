@@ -137,7 +137,7 @@ def get_user_level(points: int) -> str:
     else:
         return "🌱 Newcomer (<150 πόντοι)"
 
-# Βοηθητική συνάρτηση για να χτίζει το μενού του καλαθιού (με ή χωρίς Promo)
+# Βοηθητική συνάρτηση για να χτίζει το μενού του καλαθιού (με ή χωρίς Promo) - ΔΙΟΡΘΩΜΕΝΗ
 async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
     async with db_pool.acquire() as conn:
         cart_items = await conn.fetch("""
@@ -150,16 +150,17 @@ async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
     if not cart_items:
         return "🛒 Το καλάθι σου είναι άδειο!", None
         
-    original_price = sum(item['price'] for item in cart_items)
+    original_price = sum(Decimal(str(item['price'])) for item in cart_items)
     
     data = await state.get_data()
     promo_discount = data.get("promo_discount", 0)
     promo_tickets = data.get("promo_tickets", 0)
     promo_code = data.get("promo_code", "")
     
-    total_price = float(original_price)
+    total_price = original_price
     if promo_discount > 0:
-        total_price = round(original_price * (1 - promo_discount / 100.0), 2)
+        multiplier = Decimal(str(1 - promo_discount / 100.0))
+        total_price = (original_price * multiplier).quantize(Decimal('0.01'))
         
     text = "🛒 **Το Καλάθι σου:**\n\n"
     for item in cart_items:
