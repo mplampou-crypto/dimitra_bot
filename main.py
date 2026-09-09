@@ -48,6 +48,7 @@ async def init_db():
     global db_pool
     db_pool = await asyncpg.create_pool(DB_URL)
     async with db_pool.acquire() as connection:
+        # Δημιουργία βασικών πινάκων αν δεν υπάρχουν
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 telegram_id BIGINT PRIMARY KEY,
@@ -58,11 +59,7 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             );
         """)
-        # Αυτόματη προσθήκη στηλών αν λείπουν από προηγούμενη έκδοση
-        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS lifetime_points INT DEFAULT 0;")
-        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS giveaway_tickets INT DEFAULT 0;")
-        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_spent NUMERIC(10, 2) DEFAULT 0.00;")
-
+        
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
@@ -73,7 +70,6 @@ async def init_db():
             );
         """)
         
-        # Πίνακας για τον κατάλογο (υποστηρίζει πολλαπλά αρχεία με arrays)
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS locked_media (
                 id SERIAL PRIMARY KEY,
@@ -106,7 +102,6 @@ async def init_db():
             ON CONFLICT (id) DO NOTHING;
         """)
 
-        # Πίνακας για τους εκπτωτικούς κωδικούς
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS promo_codes (
                 code TEXT PRIMARY KEY,
@@ -114,7 +109,21 @@ async def init_db():
                 bonus_tickets INT DEFAULT 0
             );
         """)
+
+        # --- ΑΥΤΟΜΑΤΕΣ ΔΙΟΡΘΩΣΕΙΣ / ALTER TABLE ΓΙΑ ΥΠΑΡΧΟΝΤΕΣ ΠΙΝΑΚΕΣ ---
+        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS lifetime_points INT DEFAULT 0;")
+        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS giveaway_tickets INT DEFAULT 0;")
+        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_spent NUMERIC(10, 2) DEFAULT 0.00;")
+        
         await connection.execute("ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS bonus_tickets INT DEFAULT 0;")
+        
+        # Έλεγχος και προσθήκη στηλών για τα άλμπουμ στον πίνακα locked_media αν υπήρχε παλιός τύπος
+        await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS file_ids TEXT[];")
+        await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS media_types TEXT[];")
+        
+        # Αν υπήρχαν οι παλιές στήλες σε ενικό (file_id / media_type), τις διαγράφουμε για να μην υφίσταται σύγκρουση
+        await connection.execute("ALTER TABLE locked_media DROP COLUMN IF EXISTS file_id;")
+        await connection.execute("ALTER TABLE locked_media DROP COLUMN IF EXISTS media_type;")
 
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
@@ -243,7 +252,6 @@ async def admin_add_promo(message: types.Message):
         if not (0 <= discount <= 100):
             raise ValueError
         
-        # Αν έδωσε 4ο όρισμα, είναι τα έξτρα εισιτήρια, αλλιώς 0
         tickets = int(args[3]) if len(args) == 4 else 0
     except ValueError:
         await message.answer("❌ Το ποσοστό έκπτωσης πρέπει να είναι από 0 έως 100 και τα εισιτήρια ακέραιος αριθμός.")
@@ -665,7 +673,6 @@ async def process_remove_from_cart(callback: CallbackQuery, state: FSMContext):
         
     await callback.answer("❌ Το προϊόν αφαιρέθηκε από το καλάθι!", show_alert=False)
     
-    # Ανανέωση του μηνύματος του καλαθιού
     text, kb = await get_cart_text_and_keyboard(user_id, state)
     if kb:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -678,7 +685,6 @@ async def process_clear_cart(callback: CallbackQuery, state: FSMContext):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM cart WHERE telegram_id = $1;", user_id)
         
-    # Καθαρίζουμε και τυχόν εκπτωτικό κωδικό από το state
     await state.update_data(promo_code=None, promo_discount=0, promo_tickets=0)
         
     await callback.answer("🗑 Το καλάθι σου άδειασε!", show_alert=True)
@@ -714,7 +720,6 @@ async def apply_promo_code(message: types.Message, state: FSMContext):
         
     await state.set_state(None)
     
-    # Ξαναστέλνουμε το καλάθι ανανεωμένο
     text, kb = await get_cart_text_and_keyboard(message.from_user.id, state)
     if kb:
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -724,7 +729,7 @@ async def remove_promo_code(callback: CallbackQuery, state: FSMContext):
     await state.update_data(promo_code=None, promo_discount=0, promo_tickets=0)
     await callback.answer("🗑️ Ο εκπτωτικός κωδικός αφαιρέθηκε.", show_alert=False)
     
-    text, kb = await get_cart_text_and_keyboard(callback.from_user.id, state)
+    text, kb = await get_cart_text_and_keyboard(message.from_user.id, state)
     if kb:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
@@ -734,115 +739,114 @@ async def remove_promo_code(callback: CallbackQuery, state: FSMContext):
 async def process_checkout(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     
-    async with db_pool.acquire() as conn:
-        settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
-        if settings and settings['ends_at'] <= datetime.datetime.now():
-            await conn.execute("UPDATE users SET giveaway_tickets = 0;")
-            await conn.execute("UPDATE giveaway_settings SET ends_at = NOW() + INTERVAL '30 days' WHERE id = 1;")
+    try:
+        async with db_pool.acquire() as conn:
+            settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
+            if settings and settings['ends_at'] <= datetime.datetime.now():
+                await conn.execute("UPDATE users SET giveaway_tickets = 0;")
+                await conn.execute("UPDATE giveaway_settings SET ends_at = NOW() + INTERVAL '30 days' WHERE id = 1;")
 
-        cart_items = await conn.fetch("""
-            SELECT m.description, m.price, m.file_ids, m.media_types
-            FROM cart c
-            JOIN locked_media m ON c.media_id = m.id
-            WHERE c.telegram_id = $1;
-        """, user_id)
-        
-        if not cart_items:
-            await callback.answer("⚠️ Το καλάθι σου είναι άδειο.", show_alert=True)
-            return
+            cart_items = await conn.fetch("""
+                SELECT m.description, m.price, m.file_ids, m.media_types
+                FROM cart c
+                JOIN locked_media m ON c.media_id = m.id
+                WHERE c.telegram_id = $1;
+            """, user_id)
             
-        original_price = sum(item['price'] for item in cart_items)
-        
-        data = await state.get_data()
-        promo_discount = data.get("promo_discount", 0)
-        promo_tickets = data.get("promo_tickets", 0)
-        
-        total_price = float(original_price)
-        if promo_discount > 0:
-            total_price = round(original_price * (1 - promo_discount / 100.0), 2)
-            
-        user = await conn.fetchrow("SELECT balance, lifetime_points FROM users WHERE telegram_id = $1;", user_id)
-        
-        if not user:
-            await callback.answer("Σφάλμα συστήματος.", show_alert=True)
-            return
-            
-        if user['balance'] < total_price:
-            await callback.answer(f"❌ Δεν έχεις αρκετό υπόλοιπο! (Χρειάζεσαι {total_price:.2f}€)\nΠήγαινε στο Πορτοφόλι.", show_alert=True)
-            return
-            
-        new_balance = user['balance'] - total_price
-        points_earned = int(total_price) 
-        old_points = user['lifetime_points']
-        new_total_points = old_points + points_earned
-        
-        # Υπολογισμός Εισιτηρίων = (Βασικά από πόντους) + (Extra από τον promo code)
-        tickets_to_add = (new_total_points // 50) - (old_points // 50)
-        tickets_to_add += promo_tickets
-        
-        items_summary = ", ".join([item['description'] for item in cart_items])
-
-        async with conn.transaction():
-            await conn.execute(
-                """UPDATE users 
-                   SET balance = $1, 
-                       lifetime_points = lifetime_points + $2, 
-                       giveaway_tickets = giveaway_tickets + $3,
-                       total_spent = total_spent + $4 
-                   WHERE telegram_id = $5;""",
-                new_balance, points_earned, tickets_to_add, total_price, user_id
-            )
-            await conn.execute(
-                "INSERT INTO purchases (telegram_id, items_summary, total_price) VALUES ($1, $2, $3);",
-                user_id, f"Αγορά καλαθιού: {items_summary}", total_price
-            )
-            await conn.execute("DELETE FROM cart WHERE telegram_id = $1;", user_id)
-            
-    # Καθαρίζουμε το promo code από το state
-    await state.update_data(promo_code=None, promo_discount=0, promo_tickets=0)
-            
-    await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
-    await callback.message.edit_text("✅ Η αγορά ολοκληρώθηκε με επιτυχία! Ακολουθούν τα αρχεία σου...")
-
-    if tickets_to_add > 0:
-        try:
-            await bot.send_message(
-                user_id, 
-                f"🎉 **Συγχαρητήρια! Πήρες συνολικά {tickets_to_add} εισιτήριο(α) για την κλήρωση!**", 
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-    
-    # Αποστολή των αρχείων (ως Media Group αν είναι πολλά)
-    for item in cart_items:
-        try:
-            file_ids = item['file_ids']
-            media_types = item['media_types']
-            description = item['description']
-
-            if len(file_ids) == 1:
-                # Αν είναι μόνο ένα αρχείο, το στέλνουμε κανονικά
-                if media_types[0] == "photo":
-                    await bot.send_photo(chat_id=user_id, photo=file_ids[0], caption=f"🎉 {description}")
-                elif media_types[0] == "video":
-                    await bot.send_video(chat_id=user_id, video=file_ids[0], caption=f"🎉 {description}")
-            else:
-                # Αν είναι πολλαπλά αρχεία (Άλμπουμ), φτιάχνουμε InputMedia λίστα
-                media_group = []
-                for i, (f_id, m_type) in enumerate(zip(file_ids, media_types)):
-                    # Βάζουμε τη λεζάντα (caption) μόνο στο πρώτο αρχείο του άλμπουμ
-                    caption = f"🎉 {description}" if i == 0 else None
-                    
-                    if m_type == "photo":
-                        media_group.append(InputMediaPhoto(media=f_id, caption=caption))
-                    else:
-                        media_group.append(InputMediaVideo(media=f_id, caption=caption))
-                        
-                await bot.send_media_group(chat_id=user_id, media=media_group)
+            if not cart_items:
+                await callback.answer("⚠️ Το καλάθι σου είναι άδειο.", show_alert=True)
+                return
                 
-        except Exception as e:
-            logging.error(f"Error sending media to {user_id}: {e}")
+            original_price = sum(item['price'] for item in cart_items)
+            
+            data = await state.get_data()
+            promo_discount = data.get("promo_discount", 0)
+            promo_tickets = data.get("promo_tickets", 0)
+            
+            total_price = float(original_price)
+            if promo_discount > 0:
+                total_price = round(original_price * (1 - promo_discount / 100.0), 2)
+                
+            user = await conn.fetchrow("SELECT balance, lifetime_points FROM users WHERE telegram_id = $1;", user_id)
+            
+            if not user:
+                await callback.answer("Σφάλμα συστήματος.", show_alert=True)
+                return
+                
+            if user['balance'] < total_price:
+                await callback.answer(f"❌ Δεν έχεις αρκετό υπόλοιπο! (Χρειάζεσαι {total_price:.2f}€)\nΠήγαινε στο Πορτοφόλι.", show_alert=True)
+                return
+                
+            new_balance = user['balance'] - total_price
+            points_earned = int(total_price) 
+            old_points = user['lifetime_points']
+            new_total_points = old_points + points_earned
+            
+            tickets_to_add = (new_total_points // 50) - (old_points // 50)
+            tickets_to_add += promo_tickets
+            
+            items_summary = ", ".join([item['description'] for item in cart_items])
+
+            async with conn.transaction():
+                await conn.execute(
+                    """UPDATE users 
+                       SET balance = $1, 
+                           lifetime_points = lifetime_points + $2, 
+                           giveaway_tickets = giveaway_tickets + $3,
+                           total_spent = total_spent + $4 
+                       WHERE telegram_id = $5;""",
+                    new_balance, points_earned, tickets_to_add, total_price, user_id
+                )
+                await conn.execute(
+                    "INSERT INTO purchases (telegram_id, items_summary, total_price) VALUES ($1, $2, $3);",
+                    user_id, f"Αγορά καλαθιού: {items_summary}", total_price
+                )
+                await conn.execute("DELETE FROM cart WHERE telegram_id = $1;", user_id)
+                
+        await state.update_data(promo_code=None, promo_discount=0, promo_tickets=0)
+                
+        await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
+        await callback.message.edit_text("✅ Η αγορά ολοκληρώθηκε με επιτυχία! Σας αποστέλλονται τα αρχεία...")
+
+        if tickets_to_add > 0:
+            try:
+                await bot.send_message(
+                    user_id, 
+                    f"🎉 **Συγχαρητήρια! Πήρες συνολικά {tickets_to_add} εισιτήριο(α) για την κλήρωση!**", 
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+        
+        for item in cart_items:
+            try:
+                file_ids = item['file_ids']
+                media_types = item['media_types']
+                description = item['description']
+
+                if len(file_ids) == 1:
+                    if media_types[0] == "photo":
+                        await bot.send_photo(chat_id=user_id, photo=file_ids[0], caption=f"🎉 {description}")
+                    elif media_types[0] == "video":
+                        await bot.send_video(chat_id=user_id, video=file_ids[0], caption=f"🎉 {description}")
+                else:
+                    media_group = []
+                    for i, (f_id, m_type) in enumerate(zip(file_ids, media_types)):
+                        caption = f"🎉 {description}" if i == 0 else None
+                        if m_type == "photo":
+                            media_group.append(InputMediaPhoto(media=f_id, caption=caption))
+                        else:
+                            media_group.append(InputMediaVideo(media=f_id, caption=caption))
+                            
+                    await bot.send_media_group(chat_id=user_id, media=media_group)
+                    
+            except Exception as e:
+                logging.error(f"Error sending media to {user_id}: {e}")
+                
+    except Exception as e:
+        logging.error(f"Critical error during checkout for user {user_id}: {e}")
+        await callback.answer("❌ Προέκυψε σφάλμα κατά την ολοκλήρωση της αγοράς. Δοκιμάστε ξανά.", show_alert=True)
+
 
 # --- USER HANDLERS ---
 @dp.message(Command("start"))
