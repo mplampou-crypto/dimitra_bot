@@ -3,6 +3,7 @@ import datetime
 import logging
 import os
 import aiohttp
+from decimal import Decimal
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -117,11 +118,9 @@ async def init_db():
         
         await connection.execute("ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS bonus_tickets INT DEFAULT 0;")
         
-        # Έλεγχος και προσθήκη στηλών για τα άλμπουμ στον πίνακα locked_media αν υπήρχε παλιός τύπος
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS file_ids TEXT[];")
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS media_types TEXT[];")
         
-        # Αν υπήρχαν οι παλιές στήλες σε ενικό (file_id / media_type), τις διαγράφουμε για να μην υφίσταται σύγκρουση
         await connection.execute("ALTER TABLE locked_media DROP COLUMN IF EXISTS file_id;")
         await connection.execute("ALTER TABLE locked_media DROP COLUMN IF EXISTS media_type;")
 
@@ -153,7 +152,6 @@ async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
         
     original_price = sum(item['price'] for item in cart_items)
     
-    # Διαβάζουμε τα δεδομένα του State για να δούμε αν υπάρχει ενεργός κωδικός
     data = await state.get_data()
     promo_discount = data.get("promo_discount", 0)
     promo_tickets = data.get("promo_tickets", 0)
@@ -184,7 +182,6 @@ async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
             InlineKeyboardButton(text=f"❌ Αφαίρεση {item['description']}", callback_data=f"removecart_{item['cart_id']}")
         ])
     
-    # Κουμπί για Promo Code
     if promo_discount > 0 or promo_tickets > 0:
         inline_keyboard.append([InlineKeyboardButton(text=f"❌ Αφαίρεση Κωδικού ({promo_code})", callback_data="remove_promo")])
     else:
@@ -763,9 +760,10 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
             promo_discount = data.get("promo_discount", 0)
             promo_tickets = data.get("promo_tickets", 0)
             
-            total_price = float(original_price)
+            total_price = Decimal(str(original_price))
             if promo_discount > 0:
-                total_price = round(original_price * (1 - promo_discount / 100.0), 2)
+                multiplier = Decimal(str(1 - promo_discount / 100.0))
+                total_price = (total_price * multiplier).quantize(Decimal('0.01'))
                 
             user = await conn.fetchrow("SELECT balance, lifetime_points FROM users WHERE telegram_id = $1;", user_id)
             
@@ -774,7 +772,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 return
                 
             if user['balance'] < total_price:
-                await callback.answer(f"❌ Δεν έχεις αρκετό υπόλοιπο! (Χρειάζεσαι {total_price:.2f}€)\nΠήγαινε στο Πορτοφόλι.", show_alert=True)
+                await callback.answer(f"❌ Δεν έχεις αρκετό υπόλοιπο! (Χρειάζεσαι {total_price}€)\nΠήγαινε στο Πορτοφόλι.", show_alert=True)
                 return
                 
             new_balance = user['balance'] - total_price
