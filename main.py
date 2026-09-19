@@ -77,13 +77,27 @@ async def init_db():
             );
         """)
         
+        # Πίνακας για κανονικά αρχεία/media
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS locked_media (
                 id SERIAL PRIMARY KEY,
-                file_ids TEXT[] NOT NULL,
-                media_types TEXT[] NOT NULL,
+                file_ids TEXT[] DEFAULT ARRAY[]::TEXT[],
+                media_types TEXT[] DEFAULT ARRAY[]::TEXT[],
                 description TEXT,
-                price NUMERIC(10, 2) NOT NULL
+                price NUMERIC(10, 2) NOT NULL,
+                is_subscription BOOLEAN DEFAULT FALSE,
+                duration_months INT DEFAULT 0
+            );
+        """)
+        
+        # Πίνακας ενεργών συνδρομών χρηστών
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS active_subscriptions (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                user_full_name TEXT,
+                expires_at TIMESTAMP NOT NULL,
+                notified_expiry BOOLEAN DEFAULT FALSE
             );
         """)
         
@@ -118,7 +132,6 @@ async def init_db():
             );
         """)
         
-        # Πίνακας για αιτήματα PaySafe
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS paysafe_requests (
                 id SERIAL PRIMARY KEY,
@@ -130,7 +143,6 @@ async def init_db():
             );
         """)
 
-        # Πίνακας για αιτήματα Crypto
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS crypto_requests (
                 id SERIAL PRIMARY KEY,
@@ -153,9 +165,8 @@ async def init_db():
         
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS file_ids TEXT[];")
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS media_types TEXT[];")
-        
-        await connection.execute("ALTER TABLE locked_media DROP COLUMN IF EXISTS file_id;")
-        await connection.execute("ALTER TABLE locked_media DROP COLUMN IF EXISTS media_type;")
+        await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS is_subscription BOOLEAN DEFAULT FALSE;")
+        await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS duration_months INT DEFAULT 0;")
 
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
@@ -193,20 +204,17 @@ def get_level_progress(points: int):
     return f"{bar} {int(progress_percent)}%", f"{points_needed} πόντοι για ξεκλείδωμα του {next_level}!"
 
 async def get_conversion(amount_eur: float, crypto_symbol: str):
-    """ Υπολογίζει Live τις τιμές από την Binance (Χωρίς API Key) """
     try:
         async with aiohttp.ClientSession() as session:
             usdt_amount = 0.0
             crypto_amount = 0.0
             
-            # Fetch EUR -> USDT (πόσο κάνει 1 Ευρώ σε Δολάριο Tether)
             async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=EURUSDT") as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     eur_to_usdt = float(data['price'])
                     usdt_amount = amount_eur * eur_to_usdt
 
-            # Fetch EUR -> Crypto (π.χ. BTCEUR, ETHEUR, LTCEUR)
             async with session.get(f"https://api.binance.com/api/v3/ticker/price?symbol={crypto_symbol}EUR") as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -293,6 +301,48 @@ def support_keyboard():
         ]
     )
 
+# --- BACKGROUND TASK ΓΙΑ ΕΛΕΓΧΟ ΛΗΞΗΣ ΣΥΝΔΡΟΜΩΝ ---
+async def check_subscriptions_loop():
+    while True:
+        try:
+            now = datetime.datetime.now()
+            async with db_pool.acquire() as conn:
+                # Βρίσκουμε συνδρομές που έληξαν και δεν έχουμε ειδοποιήσει ακόμα
+                expired_subs = await conn.fetch("""
+                    SELECT telegram_id, user_full_name, expires_at 
+                    FROM active_subscriptions 
+                    WHERE expires_at <= $1 AND notified_expiry = FALSE;
+                """, now)
+                
+                for sub in expired_subs:
+                    t_id = sub['telegram_id']
+                    name = sub['user_full_name'] or "Άγνωστος"
+                    
+                    # Στέλνουμε ειδοποίηση σε ΟΛΟΥΣ τους Admins
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(
+                                admin_id,
+                                f"⚠️ **ΕΛΗΞΕ Η ΣΥΝΔΡΟΜΗ ΧΡΗΣΤΗ!** ⚠️\n\n"
+                                f"👤 Όνομα: **{name}**\n"
+                                f"🆔 ID: `{t_id}`\n"
+                                f"📅 Έληξε στις: {sub['expires_at'].strftime('%d/%m/%Y %H:%M')}\n\n"
+                                f"👉 *Παρακαλώ αφαίρεσε τον χρήστη από την premium ομάδα!*",
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logging.error(f"Failed to notify admin {admin_id} about expired sub: {e}")
+                    
+                    # Σημειώνουμε ότι ειδοποιήθηκε
+                    await conn.execute(
+                        "UPDATE active_subscriptions SET notified_expiry = TRUE WHERE telegram_id = $1;", 
+                        t_id
+                    )
+        except Exception as e:
+            logging.error(f"Error in background subscription checker: {e}")
+            
+        await asyncio.sleep(60) # Έλεγχος κάθε 1 λεπτό
+
 # --- ADMIN HANDLERS ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -301,14 +351,48 @@ async def admin_panel(message: types.Message):
     
     await message.answer(
         "👑 **Κρυφό Μενού Διαχειριστή**\n\n"
-        "📜 `/add_media` - Ανέβασμα προσφοράς (πολλαπλές φωτό/βίντεο)\n"
+        "📜 `/add_media` - Ανέβασμα κανονικού αρχείου/φωτό\n"
+        "⭐ `/add_sub <Τιμή> <Μήνες> <Περιγραφή>` - Προσθήκη συνδρομής ομάδας (Π.χ. `/add_sub 15.00 1 VIP Ομάδα 1 Μήνας`)\n"
         "🗑️ `/remove_media` - Διαγραφή προσφοράς από τον κατάλογο\n"
-        "🎟️ `/add_promo <κωδικός> <έκπτωση%> <ώρες> <έξτρα εισιτήρια>` - Π.χ. /add_promo VIP 20 48 2\n"
-        "❌ `/del_promo <κωδικός>` - Διαγραφή Promo Code\n"
-        "💸 `/give_money <ID> <Ποσό>` - Πιστώσεις υπολοίπου σε χρήστη\n"
-        "⏳ `/set_giveaway <ώρες>` - Ορισμός διάρκειας κλήρωσης",
+        "🎟️ `/add_promo <κωδικός> <έκπτωση%> <ώρες> <έξτρα εισιτήρια>`\n"
+        "❌ `/del_promo <κωδικός>`\n"
+        "💸 `/give_money <ID> <Ποσό>`\n"
+        "⏳ `/set_giveaway <ώρες>`",
         parse_mode="Markdown"
     )
+
+@dp.message(Command("add_sub"))
+async def admin_add_subscription(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+        
+    args = message.text.split(maxsplit=3)
+    if len(args) < 4:
+        await message.answer(
+            "⚠️ Χρήση: `/add_sub <Τιμή> <Μήνες> <Περιγραφή>`\n"
+            "Παράδειγμα: `/add_sub 10.00 1 Πρόσβαση στην Premium Ομάδα για 1 μήνα`",
+            parse_mode="Markdown"
+        )
+        return
+        
+    try:
+        price = float(args[1].replace(",", "."))
+        months = int(args[2])
+        description = args[3]
+        if price <= 0 or months <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Η τιμή και οι μήνες πρέπει να είναι θετικοί αριθμοί.")
+        return
+        
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months) 
+               VALUES (ARRAY[]::TEXT[], ARRAY[]::TEXT[], $1, $2, TRUE, $3);""",
+            description, price, months
+        )
+        
+    await message.answer(f"✅ Η συνδρομή ({months} μήνα/ες - {price}€) προστέθηκε επιτυχώς στον κατάλογο!")
 
 @dp.message(Command("add_promo"))
 async def admin_add_promo(message: types.Message):
@@ -429,7 +513,7 @@ async def start_upload(message: types.Message, state: FSMContext):
         
     await state.update_data(file_ids=[], media_types=[])
     await message.answer(
-        "📤 **Δημιουργία Προσφοράς**\n\n"
+        "📤 **Δημιουργία Προσφοράς Αρχείων**\n\n"
         "Στείλε μου **μία-μία** τις φωτογραφίες ή τα βίντεο.\nΜόλις τελειώσεις, στείλε την εντολή: `/done`",
         parse_mode="Markdown"
     )
@@ -486,7 +570,7 @@ async def receive_price(message: types.Message, state: FSMContext):
 
     async with db_pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO locked_media (file_ids, media_types, description, price) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months) VALUES ($1, $2, $3, $4, FALSE, 0)",
             file_ids, media_types, description, price
         )
         
@@ -500,7 +584,7 @@ async def admin_remove_media(message: types.Message):
         return
     
     async with db_pool.acquire() as conn:
-        items = await conn.fetch("SELECT id, description, price FROM locked_media;")
+        items = await conn.fetch("SELECT id, description, price, is_subscription FROM locked_media;")
     
     if not items:
         await message.answer("Ο κατάλογος είναι άδειος! Δεν υπάρχουν προσφορές για διαγραφή.")
@@ -509,7 +593,8 @@ async def admin_remove_media(message: types.Message):
     inline_keyboard = []
     for item in items:
         desc = item['description'][:30] + "..." if len(item['description']) > 30 else item['description']
-        inline_keyboard.append([InlineKeyboardButton(text=f"🗑️ Διαγραφή: {desc} ({item['price']}€)", callback_data=f"admindel_{item['id']}")])
+        prefix = "⭐ [Συνδρομή] " if item['is_subscription'] else "📦 "
+        inline_keyboard.append([InlineKeyboardButton(text=f"🗑️ Διαγραφή: {prefix}{desc} ({item['price']}€)", callback_data=f"admindel_{item['id']}")])
     
     await message.answer(
         "🗑️ **Διαγραφή Προσφορών**\nΕπίλεξε ποια προσφορά θέλεις να αφαιρέσεις οριστικά:", 
@@ -712,23 +797,15 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
     
     await state.update_data(amount=amount)
     
-    # Μήνυμα αναμονής (επειδή ρωτάμε το API για live ισοτιμία)
     wait_msg = await message.answer("⏳ Γίνεται υπολογισμός ισοτιμίας σε πραγματικό χρόνο...")
-    
-    # Ζητάμε τα νούμερα από την Binance
     usdt_amt, crypto_amt = await get_conversion(amount, currency)
-    
-    # Διαγράφουμε το μήνυμα αναμονής
     await wait_msg.delete()
     
-    # Λεξικό με τις διευθύνσεις
     wallets = {
         "BTC": BTC_WALLET,
         "ETH": ETH_WALLET,
         "LTC": LTC_WALLET
     }
-    
-    # Λεξικό με τα Δίκτυα (Networks)
     networks = {
         "BTC": "Bitcoin Network",
         "ETH": "ERC20",
@@ -738,7 +815,6 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
     wallet_address = wallets.get(currency, "Δεν έχει οριστεί διεύθυνση")
     network_name = networks.get(currency, "Γνωστό δίκτυο")
     
-    # Format στα νούμερα
     crypto_text = f"{crypto_amt:.6f}" if crypto_amt > 0 else "Αγνωστο (API Error)"
     usdt_text = f"{usdt_amt:.2f}" if usdt_amt > 0 else "Αγνωστο (API Error)"
     
@@ -871,10 +947,15 @@ async def show_catalog(message: types.Message):
         return
         
     for item in items:
+        if item['is_subscription']:
+            title = f"⭐ **Συνδρομή Ομάδας** ({item['duration_months']} Μήνας/ες)\n\n"
+        else:
+            title = f"🔒 **Κλειδωμένο Αρχείο**\n\n"
+            
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"🛒 Προσθήκη στο Καλάθι ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
         ])
-        await message.answer(f"🔒 **Κλειδωμένο Αρχείο**\n\n📝 {item['description']}", reply_markup=keyboard)
+        await message.answer(f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("addcart_"))
 async def process_add_to_cart(callback: CallbackQuery):
@@ -1003,11 +1084,12 @@ async def remove_promo_code(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "checkout")
 async def process_checkout(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+    user_full_name = callback.from_user.full_name
     
     try:
         async with db_pool.acquire() as conn:
             cart_items = await conn.fetch("""
-                SELECT m.description, m.price, m.file_ids, m.media_types
+                SELECT m.id, m.description, m.price, m.file_ids, m.media_types, m.is_subscription, m.duration_months
                 FROM cart c
                 JOIN locked_media m ON c.media_id = m.id
                 WHERE c.telegram_id = $1;
@@ -1040,9 +1122,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 
             new_balance = user['balance'] - total_price
             
-            # Κάθε 1€ = 5 πόντοι
             points_earned = int(total_price * 5) 
-            
             old_points = user['lifetime_points']
             new_total_points = old_points + points_earned
             
@@ -1065,12 +1145,56 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                     "INSERT INTO purchases (telegram_id, items_summary, total_price) VALUES ($1, $2, $3);",
                     user_id, f"Αγορά καλαθιού: {items_summary}", total_price
                 )
+                
+                # --- ΔΙΑΧΕΙΡΙΣΗ ΣΥΝΔΡΟΜΩΝ ---
+                has_subscription_bought = False
+                total_months_added = 0
+                
+                for item in cart_items:
+                    if item['is_subscription']:
+                        has_subscription_bought = True
+                        months = item['duration_months']
+                        total_months_added += months
+                        
+                        # Ελέγχουμε αν έχει ήδη ενεργή συνδρομή
+                        existing_sub = await conn.fetchrow(
+                            "SELECT expires_at FROM active_subscriptions WHERE telegram_id = $1;", 
+                            user_id
+                        )
+                        
+                        now = datetime.datetime.now()
+                        if existing_sub and existing_sub['expires_at'] > now:
+                            # Υπάρχει ήδη -> προσθέτουμε τους μήνες στην υπάρχουσα ημερομηνία λήξης
+                            new_expiry = existing_sub['expires_at'] + datetime.timedelta(days=30 * months)
+                            await conn.execute(
+                                "UPDATE active_subscriptions SET expires_at = $1, user_full_name = $2, notified_expiry = FALSE WHERE telegram_id = $3;",
+                                new_expiry, user_full_name, user_id
+                            )
+                        else:
+                            # Δεν έχει -> ξεκινάει από σήμερα
+                            new_expiry = now + datetime.timedelta(days=30 * months)
+                            await conn.execute(
+                                """INSERT INTO active_subscriptions (telegram_id, user_full_name, expires_at, notified_expiry) 
+                                   VALUES ($1, $2, $3, FALSE)
+                                   ON CONFLICT (telegram_id) DO UPDATE 
+                                   SET expires_at = $3, user_full_name = $2, notified_expiry = FALSE;""",
+                                user_id, user_full_name, new_expiry
+                            )
+
                 await conn.execute("DELETE FROM cart WHERE telegram_id = $1;", user_id)
                 
         await state.update_data(promo_code=None, promo_discount=0, promo_tickets=0)
                 
         await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
-        await callback.message.edit_text("✅ Η αγορά ολοκληρώθηκε με επιτυχία! Σας αποστέλλονται τα αρχεία...")
+        
+        if has_subscription_bought:
+            await callback.message.edit_text(
+                f"✅ **Η συνδρομή ενεργοποιήθηκε επιτυχώς!**\n\n"
+                f"🔗 Μπορείς να μπεις στην ομάδα εδώ:\n{GROUP_LINK}",
+                parse_mode="Markdown"
+            )
+        else:
+            await callback.message.edit_text("✅ Η αγορά ολοκληρώθηκε με επιτυχία! Σας αποστέλλονται τα αρχεία...")
 
         if tickets_to_add > 0:
             try:
@@ -1082,7 +1206,10 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
             except Exception:
                 pass
         
+        # Αποστολή κανονικών αρχείων (αν υπήρχαν στο καλάθι)
         for item in cart_items:
+            if item['is_subscription']:
+                continue
             try:
                 file_ids = item['file_ids']
                 media_types = item['media_types']
@@ -1140,6 +1267,7 @@ async def show_profile(message: types.Message):
         user_id = message.from_user.id
         async with db_pool.acquire() as conn:
             user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
+            sub_info = await conn.fetchrow("SELECT expires_at FROM active_subscriptions WHERE telegram_id = $1;", user_id)
             purchases = await conn.fetch(
                 "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
                 user_id
@@ -1159,6 +1287,16 @@ async def show_profile(message: types.Message):
         profile_text = (
             f"👤 **Το Προφίλ σου**\n\n"
             f"👛 **Υπόλοιπο:** {balance}€\n"
+        )
+        
+        # Έλεγχος αν έχει ενεργή συνδρομή να την δείχνει στο προφίλ
+        now = datetime.datetime.now()
+        if sub_info and sub_info['expires_at'] > now:
+            profile_text += f"⭐ **Premium Συνδρομή:** Ενεργή έως {sub_info['expires_at'].strftime('%d/%m/%Y %H:%M')}\n"
+        else:
+            profile_text += f"⭐ **Premium Συνδρομή:** Ανενεργή\n"
+
+        profile_text += (
             f"⭐ **Πόντοι:** {points}\n"
             f"🎖️ **Βαθμίδα:** {level_title}\n"
             f"{bar_string}\n"
@@ -1246,6 +1384,8 @@ async def show_info(message: types.Message):
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
+    # Ξεκινάμε την παρακολούθηση λήξης συνδρομών στο background
+    asyncio.create_task(check_subscriptions_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
