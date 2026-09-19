@@ -117,7 +117,6 @@ async def init_db():
         
         await connection.execute("ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS bonus_tickets INT DEFAULT 0;")
         await connection.execute("ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;")
-        # Σε περίπτωση που υπήρχαν ήδη παλιοί κωδικοί, τους βάζουμε λήξη σε 30 μέρες για να μην κρασάρουν
         await connection.execute("UPDATE promo_codes SET expires_at = NOW() + INTERVAL '30 days' WHERE expires_at IS NULL;")
         
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS file_ids TEXT[];")
@@ -129,15 +128,42 @@ async def init_db():
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
     if points >= 1000:
-        return "Ultimate VIP❤️🔞 (1000+ πόντοι)"
+        return "Ultimate VIP❤️🔞"
     elif points >= 500:
-        return "🥇 Gold (500+ πόντοι)"
+        return "Αφέντης💋👑🔞" 
     elif points >= 300:
-        return "🥈 Silver (300+ πόντοι)"
+        return "Ορεξάτος👀🔥🔞" 
     elif points >= 150:
-        return "🥉 Bronze (150+ πόντοι)"
+        return "Τολμηρός💋🔞"
     else:
-        return "🌱 Newcomer (<150 πόντοι)"
+        return "Πρωτάρης🐣🔞"
+
+def get_level_progress(points: int):
+    # Υπολογίζει τα στατιστικά για την οπτική μπάρα προόδου
+    if points < 150:
+        min_p, max_p, next_level = 0, 150, "Πρωτάρης🐣🔞"
+    elif points < 300:
+        min_p, max_p, next_level = 150, 300, "Τολμηρός💋🔞"
+    elif points < 500:
+        min_p, max_p, next_level = 300, 500, "Ορεξάτος👀🔥🔞"
+    
+    elif points < 1000:
+        min_p, max_p, next_level = 500, 1000, "Αφέντης💋👑🔞"
+    elif points >= 1000:
+        min_p, max_p, next_level = 1000, float('inf'), "Ultimate VIP❤️🔞"
+    else:
+        return "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥 100%", "🎉 Έφτασες στο μέγιστο Level (VIP)!"
+
+    # Υπολογισμός ποσοστού προόδου στο τρέχον level
+    progress_percent = (points - min_p) / (max_p - min_p) * 100
+    filled_blocks = int(progress_percent // 10)
+    empty_blocks = 10 - filled_blocks
+    
+    # Χτίσιμο της μπάρας με emojis
+    bar = "🟥" * filled_blocks + "⬜" * empty_blocks
+    
+    points_needed = max_p - points
+    return f"{bar} {int(progress_percent)}%", f"{points_needed} πόντοι για ξεκλείδωμα του {next_level}!"
 
 async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
     async with db_pool.acquire() as conn:
@@ -688,9 +714,7 @@ async def process_clear_cart(callback: CallbackQuery, state: FSMContext):
 @dp.message(F.text == "🎟️ Εκπτωτικοί Κωδικοί")
 async def show_promo_codes(message: types.Message):
     async with db_pool.acquire() as conn:
-        # 1. Διαγράφουμε όσους έχουν λήξει (αυτόματα)
         await conn.execute("DELETE FROM promo_codes WHERE expires_at <= NOW();")
-        # 2. Φέρνουμε τους υπόλοιπους (ενεργούς)
         promos = await conn.fetch("SELECT code, discount, bonus_tickets, expires_at FROM promo_codes;")
         
     if not promos:
@@ -701,7 +725,6 @@ async def show_promo_codes(message: types.Message):
     text = "🎟️ **Διαθέσιμοι Εκπτωτικοί Κωδικοί**\n\n"
     
     for p in promos:
-        # Υπολογισμός εναπομείναντα χρόνου
         remaining = p['expires_at'] - now
         hours, remainder = divmod(int(remaining.total_seconds()), 3600)
         minutes, _ = divmod(remainder, 60)
@@ -726,7 +749,6 @@ async def apply_promo_code(message: types.Message, state: FSMContext):
     code = message.text.strip().upper()
     
     async with db_pool.acquire() as conn:
-        # Καθαρίζουμε τους ληγμένους πρώτα για σιγουριά
         await conn.execute("DELETE FROM promo_codes WHERE expires_at <= NOW();")
         promo = await conn.fetchrow("SELECT discount, bonus_tickets FROM promo_codes WHERE code = $1;", code)
         
@@ -891,6 +913,7 @@ async def show_support(message: types.Message):
         reply_markup=support_keyboard()
     )
 
+# --- PROFILE HANDLERS ---
 @dp.message(F.text == "👤 Το Προφίλ μου")
 async def show_profile(message: types.Message):
     user_id = message.from_user.id
@@ -908,13 +931,17 @@ async def show_profile(message: types.Message):
     balance = user['balance']
     points = user['lifetime_points']
     tickets = user['giveaway_tickets']
+    
     level_title = get_user_level(points)
+    bar_string, next_level_string = get_level_progress(points)
 
     profile_text = (
         f"👤 **Το Προφίλ σου**\n\n"
         f"👛 **Υπόλοιπο:** {balance}€\n"
         f"⭐ **Πόντοι:** {points}\n"
-        f"🎖️ **Τίτλος / Επίπεδο:** {level_title}\n"
+        f"🎖️ **Βαθμίδα:** {level_title}\n"
+        f"{bar_string}\n"
+        f"📈 _{next_level_string}_\n\n"
         f"🎟️ **Εισιτήρια Κλήρωσης:** {tickets}\n\n"
         f"📜 **Πρόσφατες Αγορές:**\n"
     )
@@ -925,7 +952,38 @@ async def show_profile(message: types.Message):
     else:
         profile_text += "Δεν έχεις κάνει κάποια αγορά ακόμα."
 
-    await message.answer(profile_text, parse_mode="Markdown")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Δες όλα τα Levels & Πόντους", callback_data="show_levels_info")]
+    ])
+
+    await message.answer(profile_text, parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.callback_query(F.data == "show_levels_info")
+async def show_levels_info_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        user_points = await conn.fetchval("SELECT lifetime_points FROM users WHERE telegram_id = $1;", user_id) or 0
+        
+    bar_string, next_level_string = get_level_progress(user_points)
+
+    text = (
+        "📊 **Βαθμίδες (Levels) & Πόντοι**\n\n"
+        "Αυτά είναι τα διαθέσιμα επίπεδα που μπορείς να ξεκλειδώσεις μαζεύοντας πόντους από τις αγορές σου:\n\n"
+        "🌱 **Newcomer** (0 - 149 πόντοι)\n"
+        "🥉 **Bronze** (150 - 299 πόντοι)\n"
+        "🥈 **Silver** (300 - 499 πόντοι)\n"
+        "🥇 **Gold** (500 - 999 πόντοι)\n"
+        "💎 **Diamond** (1000 - 1999 πόντοι)\n"
+        "👑 **VIP 🔞❤️** (2000+ πόντοι)\n\n"
+        f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
+        f"{bar_string}\n"
+        f"🎯 {next_level_string}"
+    )
+
+    await callback.message.answer(text, parse_mode="Markdown")
+    await callback.answer()
+
 
 @dp.message(F.text == "🎁 Κλήρωση")
 async def show_giveaway(message: types.Message):
