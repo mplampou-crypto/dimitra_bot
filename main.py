@@ -24,6 +24,7 @@ LTC_WALLET = os.getenv("LTC_WALLET", "Ltc1q0000000000000000000000000000000000000
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in os.getenv("ADMIN_IDS", "123456789,987654321").split(",") if admin_id.strip()]
 
 GROUP_LINK = "https://t.me/+h9QI608rXMUxOWI0"
+PREMIUM_GROUP_LINK = "https://t.me/+ΤΟ_LINK_ΤΗΣ_PREMIUM_ΕΔΩ" # ΑΛΛΑΞΕ ΤΟ ΜΕ ΤΟ LINK ΤΗΣ ΣΥΝΔΡΟΜΗΤΙΚΗΣ ΟΜΑΔΑΣ
 ADMIN_LINK = "https://t.me/dimitrasavvidi"
 
 bot = Bot(token=TOKEN)
@@ -77,7 +78,6 @@ async def init_db():
             );
         """)
         
-        # Πίνακας για κανονικά αρχεία/media
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS locked_media (
                 id SERIAL PRIMARY KEY,
@@ -90,7 +90,6 @@ async def init_db():
             );
         """)
         
-        # Πίνακας ενεργών συνδρομών χρηστών
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS active_subscriptions (
                 id SERIAL PRIMARY KEY,
@@ -204,26 +203,31 @@ def get_level_progress(points: int):
     return f"{bar} {int(progress_percent)}%", f"{points_needed} πόντοι για ξεκλείδωμα του {next_level}!"
 
 async def get_conversion(amount_eur: float, crypto_symbol: str):
+    """ Υπολογίζει Live τις τιμές από την Bybit (V5 API - Χωρίς API Key) """
     try:
         async with aiohttp.ClientSession() as session:
             usdt_amount = 0.0
             crypto_amount = 0.0
             
-            async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=EURUSDT") as resp:
+            async with session.get("https://api.bybit.com/v5/market/tickers?category=spot&symbol=EURUSDT") as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    eur_to_usdt = float(data['price'])
-                    usdt_amount = amount_eur * eur_to_usdt
+                    result_list = data.get("result", {}).get("list", [])
+                    if result_list:
+                        eur_to_usdt = float(result_list[0]['lastPrice'])
+                        usdt_amount = amount_eur * eur_to_usdt
 
-            async with session.get(f"https://api.binance.com/api/v3/ticker/price?symbol={crypto_symbol}EUR") as resp:
+            async with session.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={crypto_symbol}EUR") as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    crypto_price_eur = float(data['price'])
-                    crypto_amount = amount_eur / crypto_price_eur
+                    result_list = data.get("result", {}).get("list", [])
+                    if result_list:
+                        crypto_price_eur = float(result_list[0]['lastPrice'])
+                        crypto_amount = amount_eur / crypto_price_eur
                     
             return usdt_amount, crypto_amount
     except Exception as e:
-        logging.error(f"Error fetching crypto prices: {e}")
+        logging.error(f"Error fetching crypto prices from Bybit: {e}")
         return 0.0, 0.0
 
 async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
@@ -307,7 +311,6 @@ async def check_subscriptions_loop():
         try:
             now = datetime.datetime.now()
             async with db_pool.acquire() as conn:
-                # Βρίσκουμε συνδρομές που έληξαν και δεν έχουμε ειδοποιήσει ακόμα
                 expired_subs = await conn.fetch("""
                     SELECT telegram_id, user_full_name, expires_at 
                     FROM active_subscriptions 
@@ -318,7 +321,6 @@ async def check_subscriptions_loop():
                     t_id = sub['telegram_id']
                     name = sub['user_full_name'] or "Άγνωστος"
                     
-                    # Στέλνουμε ειδοποίηση σε ΟΛΟΥΣ τους Admins
                     for admin_id in ADMIN_IDS:
                         try:
                             await bot.send_message(
@@ -333,7 +335,6 @@ async def check_subscriptions_loop():
                         except Exception as e:
                             logging.error(f"Failed to notify admin {admin_id} about expired sub: {e}")
                     
-                    # Σημειώνουμε ότι ειδοποιήθηκε
                     await conn.execute(
                         "UPDATE active_subscriptions SET notified_expiry = TRUE WHERE telegram_id = $1;", 
                         t_id
@@ -341,7 +342,7 @@ async def check_subscriptions_loop():
         except Exception as e:
             logging.error(f"Error in background subscription checker: {e}")
             
-        await asyncio.sleep(60) # Έλεγχος κάθε 1 λεπτό
+        await asyncio.sleep(60)
 
 # --- ADMIN HANDLERS ---
 @dp.message(Command("admin"))
@@ -1156,7 +1157,6 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                         months = item['duration_months']
                         total_months_added += months
                         
-                        # Ελέγχουμε αν έχει ήδη ενεργή συνδρομή
                         existing_sub = await conn.fetchrow(
                             "SELECT expires_at FROM active_subscriptions WHERE telegram_id = $1;", 
                             user_id
@@ -1164,14 +1164,12 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                         
                         now = datetime.datetime.now()
                         if existing_sub and existing_sub['expires_at'] > now:
-                            # Υπάρχει ήδη -> προσθέτουμε τους μήνες στην υπάρχουσα ημερομηνία λήξης
                             new_expiry = existing_sub['expires_at'] + datetime.timedelta(days=30 * months)
                             await conn.execute(
                                 "UPDATE active_subscriptions SET expires_at = $1, user_full_name = $2, notified_expiry = FALSE WHERE telegram_id = $3;",
                                 new_expiry, user_full_name, user_id
                             )
                         else:
-                            # Δεν έχει -> ξεκινάει από σήμερα
                             new_expiry = now + datetime.timedelta(days=30 * months)
                             await conn.execute(
                                 """INSERT INTO active_subscriptions (telegram_id, user_full_name, expires_at, notified_expiry) 
@@ -1190,7 +1188,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
         if has_subscription_bought:
             await callback.message.edit_text(
                 f"✅ **Η συνδρομή ενεργοποιήθηκε επιτυχώς!**\n\n"
-                f"🔗 Μπορείς να μπεις στην ομάδα εδώ:\n{GROUP_LINK}",
+                f"🔗 Μπορείς να μπεις στην Premium ομάδα εδώ:\n{PREMIUM_GROUP_LINK}",
                 parse_mode="Markdown"
             )
         else:
@@ -1289,7 +1287,6 @@ async def show_profile(message: types.Message):
             f"👛 **Υπόλοιπο:** {balance}€\n"
         )
         
-        # Έλεγχος αν έχει ενεργή συνδρομή να την δείχνει στο προφίλ
         now = datetime.datetime.now()
         if sub_info and sub_info['expires_at'] > now:
             profile_text += f"⭐ **Premium Συνδρομή:** Ενεργή έως {sub_info['expires_at'].strftime('%d/%m/%Y %H:%M')}\n"
@@ -1378,13 +1375,12 @@ async def show_giveaway(message: types.Message):
 
 @dp.message(F.text == "ℹ️ Info")
 async def show_info(message: types.Message):
-    await message.answer("Γεια σου! Είμαι η Δήμητρα Σαββίδη και είμαι 22 με πολλές καύλες . Στείλτε μου μήνυμα για παραπάνω υλικό μου❤️💋🔞")
+    await message.answer("Είμαι η Δήμητρα Σαββίδη και είμαι 22 με πολλές καύλες . Στείλτε μου μήνυμα για παραπάνω υλικό μου❤️💋🔞")
 
 # --- MAIN EXECUTION ---
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
-    # Ξεκινάμε την παρακολούθηση λήξης συνδρομών στο background
     asyncio.create_task(check_subscriptions_loop())
     await dp.start_polling(bot)
 
