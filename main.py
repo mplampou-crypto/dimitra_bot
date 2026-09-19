@@ -24,7 +24,7 @@ LTC_WALLET = os.getenv("LTC_WALLET", "Ltc1q0000000000000000000000000000000000000
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in os.getenv("ADMIN_IDS", "123456789,987654321").split(",") if admin_id.strip()]
 
 GROUP_LINK = "https://t.me/+h9QI608rXMUxOWI0"
-PREMIUM_GROUP_LINK = "https://t.me/+ΤΟ_LINK_ΤΗΣ_PREMIUM_ΕΔΩ" # ΑΛΛΑΞΕ ΤΟ ΜΕ ΤΟ LINK ΤΗΣ ΣΥΝΔΡΟΜΗΤΙΚΗΣ ΟΜΑΔΑΣ
+PREMIUM_GROUP_LINK = "https://t.me/+tJ-TlvZpt2Y5YTA8" # ΑΛΛΑΞΕ ΤΟ ΜΕ ΤΟ LINK ΤΗΣ ΣΥΝΔΡΟΜΗΤΙΚΗΣ ΟΜΑΔΑΣ
 ADMIN_LINK = "https://t.me/dimitrasavvidi"
 
 bot = Bot(token=TOKEN)
