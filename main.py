@@ -16,6 +16,7 @@ TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL", "postgresql://db_user:db_password@localhost:5432/db_name")
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "")
 
+# Εδώ βάζεις τα IDs σας αν δεν τα τραβάει από το περιβάλλον
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in os.getenv("ADMIN_IDS", "123456789,987654321").split(",") if admin_id.strip()]
 
 GROUP_LINK = "https://t.me/+h9QI608rXMUxOWI0"
@@ -128,7 +129,15 @@ async def init_db():
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
     if points >= 1000:
-        return c
+        return "Ultimate VIP❤️🔞"
+    elif points >= 500:
+        return "Αφέντης💋👑🔞"
+    elif points >= 300:
+        return "Ορεξάτος👀🔥🔞"
+    elif points >= 150:
+        return "Τολμηρός💋🔞"
+    else:
+        return "Πρωτάρης🐣🔞"
 
 def get_level_progress(points: int):
     # Υπολογίζει τα στατιστικά για την οπτική μπάρα προόδου
@@ -142,7 +151,7 @@ def get_level_progress(points: int):
     elif points < 1000:
         min_p, max_p, next_level = 500, 1000, "Αφέντης💋👑🔞"
     elif points >= 1000:
-        min_p, max_p, next_level = 1000, float('inf'), "Ultimate VIP❤️🔞"
+        min_p, max_p, next_level = 1000, 2000, "Ultimate VIP❤️🔞" # Βάζουμε ένα όριο για να μη σκάσει η διαίρεση
     else:
         return "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥 100%", "🎉 Έφτασες στο μέγιστο Level (VIP)!"
 
@@ -235,7 +244,7 @@ def support_keyboard():
 # --- ADMIN HANDLERS ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
     
     await message.answer(
@@ -251,7 +260,7 @@ async def admin_panel(message: types.Message):
 
 @dp.message(Command("add_promo"))
 async def admin_add_promo(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
         
     args = message.text.split()
@@ -287,7 +296,7 @@ async def admin_add_promo(message: types.Message):
 
 @dp.message(Command("del_promo"))
 async def admin_del_promo(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
         
     args = message.text.split()
@@ -306,7 +315,7 @@ async def admin_del_promo(message: types.Message):
 
 @dp.message(Command("set_giveaway"))
 async def set_giveaway_timer(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
 
     args = message.text.split()
@@ -331,7 +340,7 @@ async def set_giveaway_timer(message: types.Message):
 
 @dp.message(Command("give_money"))
 async def admin_give_money(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
 
     args = message.text.split()
@@ -363,7 +372,7 @@ async def admin_give_money(message: types.Message):
 # --- ADMIN UPLOAD MEDIA (ΠΟΛΛΑΠΛΑ ΑΡΧΕΙΑ) ---
 @dp.message(Command("add_media"))
 async def start_upload(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
         
     await state.update_data(file_ids=[], media_types=[])
@@ -435,7 +444,7 @@ async def receive_price(message: types.Message, state: FSMContext):
 # --- ADMIN DELETE MEDIA ---
 @dp.message(Command("remove_media"))
 async def admin_remove_media(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
     
     async with db_pool.acquire() as conn:
@@ -458,7 +467,7 @@ async def admin_remove_media(message: types.Message):
 
 @dp.callback_query(F.data.startswith("admindel_"))
 async def process_admin_delete(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return
     
     media_id = int(callback.data.split("_")[1])
@@ -532,18 +541,19 @@ async def process_paysafe_code(message: types.Message, state: FSMContext):
         ]
     ])
     
-    try:
-        await bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
-        await message.answer("✅ Το αίτημά σου στάλθηκε επιτυχώς! Μόλις ο διαχειριστής επιβεβαιώσει τον κωδικό, τα χρήματα θα μπουν στο πορτοφόλι σου.")
-    except Exception as e:
-        await message.answer("❌ Υπήρξε ένα σφάλμα κατά την αποστολή.")
-        logging.error(f"PaySafe sending to admin failed: {e}")
-    
+    # Ειδοποίηση σε όλους τους Admin
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"PaySafe sending to admin {admin_id} failed: {e}")
+            
+    await message.answer("✅ Το αίτημά σου στάλθηκε επιτυχώς! Μόλις ο διαχειριστής επιβεβαιώσει τον κωδικό, τα χρήματα θα μπουν στο πορτοφόλι σου.")
     await state.clear()
 
 @dp.callback_query(F.data.startswith("ps_acc_"))
 async def admin_accept_paysafe(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return
     
     parts = callback.data.split("_")
@@ -562,7 +572,7 @@ async def admin_accept_paysafe(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("ps_rej_"))
 async def admin_reject_paysafe(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         return
     
     parts = callback.data.split("_")
@@ -912,7 +922,6 @@ async def show_profile(message: types.Message):
         user_id = message.from_user.id
         async with db_pool.acquire() as conn:
             user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
-            # ΔΙΟΡΘΩΣΗ ΕΔΩ: Αφαιρέθηκε το λάθος alias και μπήκε σωστά το query
             purchases = await conn.fetch(
                 "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
                 user_id
@@ -955,6 +964,7 @@ async def show_profile(message: types.Message):
     except Exception as e:
         logging.error(f"Error in show_profile for user {message.from_user.id}: {e}")
         await message.answer("❌ Προέκυψε κάποιο πρόβλημα κατά την εμφάνιση του προφίλ σου. Δοκίμασε ξανά αργότερα.")
+
 @dp.callback_query(F.data == "show_levels_info")
 async def show_levels_info_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -969,7 +979,7 @@ async def show_levels_info_callback(callback: CallbackQuery):
         "Αυτά είναι τα διαθέσιμα επίπεδα που μπορείς να ξεκλειδώσεις μαζεύοντας πόντους από τις αγορές σου:\n\n"
         "🐣🔞 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
         "💋🔞 **Τολμηρός💋🔞** (150 - 299 πόντοι)\n"
-        "👀🔥🔞 **Ορεξάτοςc** (300 - 499 πόντοι)\n"
+        "👀🔥🔞 **Ορεξάτος** (300 - 499 πόντοι)\n"
         "💋👑🔞 **Αφέντης💋👑🔞** (500 - 999 πόντοι)\n"
         "🔞❤️ **VIP 🔞❤️** (1000+ πόντοι)\n\n"
         f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
