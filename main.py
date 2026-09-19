@@ -90,6 +90,9 @@ async def init_db():
             );
         """)
         
+        # ΠΡΟΣΩΡΙΝΗ ΕΝΤΟΛΗ ΔΙΑΓΡΑΦΗΣ (ΝΑ ΤΗ ΣΒΗΣΕΙΣ ΜΕΤΑ ΤΗΝ ΠΡΩΤΗ ΕΚΤΕΛΕΣΗ)
+        await connection.execute("DROP TABLE IF EXISTS active_subscriptions;")
+        
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS active_subscriptions (
                 id SERIAL PRIMARY KEY,
