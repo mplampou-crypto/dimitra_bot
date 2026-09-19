@@ -541,8 +541,8 @@ async def show_wallet(message: types.Message):
     text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto (Χειροκίνητη)", callback_data="crypto_start")],
-        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe (Χειροκίνητη)", callback_data="paysafe_start")]
+        [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto ", callback_data="crypto_start")],
+        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe ", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
