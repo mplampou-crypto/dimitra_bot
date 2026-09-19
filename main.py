@@ -912,6 +912,7 @@ async def show_profile(message: types.Message):
         user_id = message.from_user.id
         async with db_pool.acquire() as conn:
             user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
+            # ΔΙΟΡΘΩΣΗ ΕΔΩ: Αφαιρέθηκε το λάθος alias και μπήκε σωστά το query
             purchases = await conn.fetch(
                 "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
                 user_id
