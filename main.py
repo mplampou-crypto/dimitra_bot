@@ -16,7 +16,7 @@ TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL", "postgresql://db_user:db_password@localhost:5432/db_name")
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "")
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+ADMIN_IDS = [int(admin_id.strip()) for admin_id in os.getenv("ADMIN_IDS", "123456789,987654321").split(",") if admin_id.strip()]
 
 GROUP_LINK = "https://t.me/your_group"
 ADMIN_LINK = "https://t.me/your_username"
