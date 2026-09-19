@@ -908,48 +908,52 @@ async def show_support(message: types.Message):
 # --- PROFILE HANDLERS ---
 @dp.message(F.text == "👤 Το Προφίλ μου")
 async def show_profile(message: types.Message):
-    user_id = message.from_user.id
-    async with db_pool.acquire() as conn:
-        user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
-        purchases = await conn.fetch(
-            "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
-            user_id
+    try:
+        user_id = message.from_user.id
+        async with db_pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
+            purchases = await conn.fetch(
+                "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
+                user_id
+            )
+
+        if not user:
+            await message.answer("Δεν βρέθηκαν στοιχεία προφίλ. Πληκτρολογήστε /start.")
+            return
+
+        balance = user['balance']
+        points = user['lifetime_points']
+        tickets = user['giveaway_tickets']
+        
+        level_title = get_user_level(points)
+        bar_string, next_level_string = get_level_progress(points)
+
+        profile_text = (
+            f"👤 **Το Προφίλ σου**\n\n"
+            f"👛 **Υπόλοιπο:** {balance}€\n"
+            f"⭐ **Πόντοι:** {points}\n"
+            f"🎖️ **Βαθμίδα:** {level_title}\n"
+            f"{bar_string}\n"
+            f"📈 _{next_level_string}_\n\n"
+            f"🎟️ **Εισιτήρια Κλήρωσης:** {tickets}\n\n"
+            f"📜 **Πρόσφατες Αγορές:**\n"
         )
 
-    if not user:
-        await message.answer("Δεν βρέθηκαν στοιχεία προφίλ. Πληκτρολογήστε /start.")
-        return
+        if purchases:
+            for p in purchases:
+                profile_text += f"- {p['items_summary']} ({p['total_price']}€) στις {p['created_at'].strftime('%d/%m %H:%M')}\n"
+        else:
+            profile_text += "Δεν έχεις κάνει κάποια αγορά ακόμα."
 
-    balance = user['balance']
-    points = user['lifetime_points']
-    tickets = user['giveaway_tickets']
-    
-    level_title = get_user_level(points)
-    bar_string, next_level_string = get_level_progress(points)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Δες όλα τα Levels & Πόντους", callback_data="show_levels_info")]
+        ])
 
-    profile_text = (
-        f"👤 **Το Προφίλ σου**\n\n"
-        f"👛 **Υπόλοιπο:** {balance}€\n"
-        f"⭐ **Πόντοι:** {points}\n"
-        f"🎖️ **Βαθμίδα:** {level_title}\n"
-        f"{bar_string}\n"
-        f"📈 _{next_level_string}_\n\n"
-        f"🎟️ **Εισιτήρια Κλήρωσης:** {tickets}\n\n"
-        f"📜 **Πρόσφατες Αγορές:**\n"
-    )
-
-    if purchases:
-        for p in purchases:
-            profile_text += f"- {p['items_summary']} ({p['total_price']}€) στις {p['created_at'].strftime('%d/%m %H:%M')}\n"
-    else:
-        profile_text += "Δεν έχεις κάνει κάποια αγορά ακόμα."
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Δες όλα τα Levels & Πόντους", callback_data="show_levels_info")]
-    ])
-
-    await message.answer(profile_text, parse_mode="Markdown", reply_markup=keyboard)
-
+        await message.answer(profile_text, parse_mode="Markdown", reply_markup=keyboard)
+        
+    except Exception as e:
+        logging.error(f"Error in show_profile for user {message.from_user.id}: {e}")
+        await message.answer("❌ Προέκυψε κάποιο πρόβλημα κατά την εμφάνιση του προφίλ σου. Δοκίμασε ξανά αργότερα.")
 @dp.callback_query(F.data == "show_levels_info")
 async def show_levels_info_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
