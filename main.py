@@ -1378,7 +1378,7 @@ async def show_giveaway(message: types.Message):
 
 @dp.message(F.text == "ℹ️ Info")
 async def show_info(message: types.Message):
-    await message.answer("Είμαι η Δήμητρα Σαββίδη και είμαι 22 με πολλές καύλες . Στείλτε μου μήνυμα για παραπάνω υλικό μου❤️💋🔞")
+    await message.answer("Γεια σου! Είμαι η Δήμητρα Σαββίδη και είμαι 22 με πολλές καύλες . Στείλτε μου μήνυμα για παραπάνω υλικό μου❤️💋🔞")
 
 # --- MAIN EXECUTION ---
 async def main():
