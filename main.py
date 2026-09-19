@@ -129,7 +129,7 @@ async def init_db():
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
     if points >= 1000:
-        return "💎 Diamond (1000+ πόντοι)"
+        return "Ultimate VIP❤️🔞 (1000+ πόντοι)"
     elif points >= 500:
         return "🥇 Gold (500+ πόντοι)"
     elif points >= 300:
