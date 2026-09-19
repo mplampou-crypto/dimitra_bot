@@ -18,7 +18,7 @@ NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "")
 
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in os.getenv("ADMIN_IDS", "123456789,987654321").split(",") if admin_id.strip()]
 
-GROUP_LINK = "https://t.me/your_group"
+GROUP_LINK = "https://t.me/+h9QI608rXMUxOWI0"
 ADMIN_LINK = "https://t.me/your_username"
 
 bot = Bot(token=TOKEN)
