@@ -15,8 +15,8 @@ import asyncpg
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL", "postgresql://db_user:db_password@localhost:5432/db_name")
 
-# Διευθύνσεις Πορτοφολιών Crypto (Μπορείς να τις ορίσεις και στο VPS)
-BTC_WALLET = os.getenv("BTC_WALLET", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+# Διευθύνσεις Πορτοφολιών Crypto
+BTC_WALLET = os.getenv("BTC_WALLET", "1waQSukZCthRAwc7D97hh918gG7CwXz2N")
 ETH_WALLET = os.getenv("ETH_WALLET", "0x0000000000000000000000000000000000000000")
 LTC_WALLET = os.getenv("LTC_WALLET", "Ltc1q0000000000000000000000000000000000000")
 
@@ -191,6 +191,32 @@ def get_level_progress(points: int):
     bar = "🟥" * filled_blocks + "⬜" * empty_blocks
     points_needed = max_p - points
     return f"{bar} {int(progress_percent)}%", f"{points_needed} πόντοι για ξεκλείδωμα του {next_level}!"
+
+async def get_conversion(amount_eur: float, crypto_symbol: str):
+    """ Υπολογίζει Live τις τιμές από την Binance (Χωρίς API Key) """
+    try:
+        async with aiohttp.ClientSession() as session:
+            usdt_amount = 0.0
+            crypto_amount = 0.0
+            
+            # Fetch EUR -> USDT (πόσο κάνει 1 Ευρώ σε Δολάριο Tether)
+            async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=EURUSDT") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    eur_to_usdt = float(data['price'])
+                    usdt_amount = amount_eur * eur_to_usdt
+
+            # Fetch EUR -> Crypto (π.χ. BTCEUR, ETHEUR, LTCEUR)
+            async with session.get(f"https://api.binance.com/api/v3/ticker/price?symbol={crypto_symbol}EUR") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    crypto_price_eur = float(data['price'])
+                    crypto_amount = amount_eur / crypto_price_eur
+                    
+            return usdt_amount, crypto_amount
+    except Exception as e:
+        logging.error(f"Error fetching crypto prices: {e}")
+        return 0.0, 0.0
 
 async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
     async with db_pool.acquire() as conn:
@@ -686,19 +712,45 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
     
     await state.update_data(amount=amount)
     
+    # Μήνυμα αναμονής (επειδή ρωτάμε το API για live ισοτιμία)
+    wait_msg = await message.answer("⏳ Γίνεται υπολογισμός ισοτιμίας σε πραγματικό χρόνο...")
+    
+    # Ζητάμε τα νούμερα από την Binance
+    usdt_amt, crypto_amt = await get_conversion(amount, currency)
+    
+    # Διαγράφουμε το μήνυμα αναμονής
+    await wait_msg.delete()
+    
+    # Λεξικό με τις διευθύνσεις
     wallets = {
         "BTC": BTC_WALLET,
         "ETH": ETH_WALLET,
         "LTC": LTC_WALLET
     }
+    
+    # Λεξικό με τα Δίκτυα (Networks)
+    networks = {
+        "BTC": "Bitcoin Network",
+        "ETH": "ERC20",
+        "LTC": "Litecoin Network"
+    }
+    
     wallet_address = wallets.get(currency, "Δεν έχει οριστεί διεύθυνση")
+    network_name = networks.get(currency, "Γνωστό δίκτυο")
+    
+    # Format στα νούμερα
+    crypto_text = f"{crypto_amt:.6f}" if crypto_amt > 0 else "Αγνωστο (API Error)"
+    usdt_text = f"{usdt_amt:.2f}" if usdt_amt > 0 else "Αγνωστο (API Error)"
     
     msg_text = (
         f"📥 **Στοιχεία Πληρωμής ({currency})**\n\n"
-        f"💰 **Ποσό:** {amount}€\n"
-        f"🪙 **Νόμισμα:** {currency}\n\n"
+        f"💶 **Ποσό Κατάθεσης:** {amount}€\n"
+        f"💵 **Αντιστοιχία USDT:** ~{usdt_text} USDT\n"
+        f"🪙 **Σε {currency}:** ~{crypto_text} {currency}\n"
+        f"🔗 **Δίκτυο (Network):** {network_name}\n\n"
         f"📍 **Διεύθυνση Πορτοφολιού:**\n`{wallet_address}`\n\n"
-        f"📸 **Μόλις κάνεις τη μεταφορά, στείλε μου εδώ σε φωτογραφία το screenshot της συναλλαγής!**"
+        f"📸 **Μόλις κάνεις τη μεταφορά, στείλε μου εδώ σε φωτογραφία το screenshot της συναλλαγής!**\n"
+        f"_(Σημείωση: Φρόντισε να στείλεις την ακριβή αξία σε Crypto ή USDT)_"
     )
     await message.answer(msg_text, parse_mode="Markdown")
     await state.set_state(CryptoTopUp.waiting_for_screenshot)
@@ -1143,11 +1195,11 @@ async def show_levels_info_callback(callback: CallbackQuery):
     text = (
         "📊 **Βαθμίδες (Levels) & Πόντοι**\n\n"
         "Αυτά είναι τα διαθέσιμα επίπεδα που μπορείς να ξεκλειδώσεις μαζεύοντας πόντους από τις αγορές σου:\n\n"
-        "🐣🔞 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
-        "💋🔞 **Τολμηρός💋🔞** (150 - 299 πόντοι)\n"
-        "👀🔥🔞 **Ορεξάτος** (300 - 499 πόντοι)\n"
-        "💋👑🔞 **Αφέντης💋👑🔞** (500 - 999 πόντοι)\n"
-        "🔞❤️ **VIP 🔞❤️** (1000+ πόντοι)\n\n"
+        " **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
+        " **Τολμηρός💋🔞** (150 - 299 πόντοι)\n"
+        " **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι)\n"
+        " **Αφέντης💋👑🔞** (500 - 999 πόντοι)\n"
+        " **VIP🔞❤️ ** (1000+ πόντοι)\n\n"
         f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
         f"{bar_string}\n"
         f"🎯 {next_level_string}"
@@ -1188,7 +1240,7 @@ async def show_giveaway(message: types.Message):
 
 @dp.message(F.text == "ℹ️ Info")
 async def show_info(message: types.Message):
-    await message.answer("Εδώ προσθέτεις πληροφορίες για το κανάλι ή τους όρους χρήσης.")
+    await message.answer("Είμαι η Δήμητρα Σαββίδη και είμαι 22 με πολλές καύλες . Στείλτε μου μήνυμα για παραπάνω υλικό μου❤️💋🔞")
 
 # --- MAIN EXECUTION ---
 async def main():
