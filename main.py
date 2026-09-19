@@ -14,7 +14,11 @@ import asyncpg
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL", "postgresql://db_user:db_password@localhost:5432/db_name")
-NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "")
+
+# Διευθύνσεις Πορτοφολιών Crypto (Μπορείς να τις ορίσεις και στο VPS)
+BTC_WALLET = os.getenv("BTC_WALLET", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+ETH_WALLET = os.getenv("ETH_WALLET", "0x0000000000000000000000000000000000000000")
+LTC_WALLET = os.getenv("LTC_WALLET", "Ltc1q0000000000000000000000000000000000000")
 
 # Εδώ βάζεις τα IDs σας αν δεν τα τραβάει από το περιβάλλον
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in os.getenv("ADMIN_IDS", "123456789,987654321").split(",") if admin_id.strip()]
@@ -37,9 +41,11 @@ class PaySafeTopUp(StatesGroup):
     waiting_for_amount = State()
     waiting_for_code = State()
 
-# --- FSM STATES FOR AUTOMATED CRYPTO (NOWPAYMENTS) ---
+# --- FSM STATES FOR MANUAL CRYPTO ---
 class CryptoTopUp(StatesGroup):
+    waiting_for_currency = State()
     waiting_for_amount = State()
+    waiting_for_screenshot = State()
 
 # --- FSM STATES FOR PROMO CODES ---
 class CartPromo(StatesGroup):
@@ -111,6 +117,31 @@ async def init_db():
                 expires_at TIMESTAMP
             );
         """)
+        
+        # Πίνακας για αιτήματα PaySafe
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS paysafe_requests (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                amount NUMERIC(10, 2),
+                code TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # Πίνακας για αιτήματα Crypto
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS crypto_requests (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                amount NUMERIC(10, 2),
+                currency TEXT,
+                photo_file_id TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
 
         await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS lifetime_points INT DEFAULT 0;")
         await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS giveaway_tickets INT DEFAULT 0;")
@@ -140,29 +171,24 @@ def get_user_level(points: int) -> str:
         return "Πρωτάρης🐣🔞"
 
 def get_level_progress(points: int):
-    # Υπολογίζει τα στατιστικά για την οπτική μπάρα προόδου
     if points < 150:
         min_p, max_p, next_level = 0, 150, "Πρωτάρης🐣🔞"
     elif points < 300:
         min_p, max_p, next_level = 150, 300, "Τολμηρός💋🔞"
     elif points < 500:
         min_p, max_p, next_level = 300, 500, "Ορεξάτος👀🔥🔞"
-    
     elif points < 1000:
         min_p, max_p, next_level = 500, 1000, "Αφέντης💋👑🔞"
     elif points >= 1000:
-        min_p, max_p, next_level = 1000, 2000, "Ultimate VIP❤️🔞" # Βάζουμε ένα όριο για να μη σκάσει η διαίρεση
+        min_p, max_p, next_level = 1000, 2000, "Ultimate VIP❤️🔞"
     else:
         return "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥 100%", "🎉 Έφτασες στο μέγιστο Level (VIP)!"
 
-    # Υπολογισμός ποσοστού προόδου στο τρέχον level
     progress_percent = (points - min_p) / (max_p - min_p) * 100
     filled_blocks = int(progress_percent // 10)
     empty_blocks = 10 - filled_blocks
     
-    # Χτίσιμο της μπάρας με emojis
     bar = "🟥" * filled_blocks + "⬜" * empty_blocks
-    
     points_needed = max_p - points
     return f"{bar} {int(progress_percent)}%", f"{points_needed} πόντοι για ξεκλείδωμα του {next_level}!"
 
@@ -489,7 +515,7 @@ async def show_wallet(message: types.Message):
     text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡ Αυτόματη Κατάθεση με Crypto", callback_data="crypto_start")],
+        [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto (Χειροκίνητη)", callback_data="crypto_start")],
         [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe (Χειροκίνητη)", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
@@ -526,22 +552,29 @@ async def process_paysafe_code(message: types.Message, state: FSMContext):
     
     data = await state.get_data()
     amount = data['amount']
+    user_id = message.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        req_id = await conn.fetchval(
+            "INSERT INTO paysafe_requests (telegram_id, amount, code) VALUES ($1, $2, $3) RETURNING id;",
+            user_id, amount, code
+        )
     
     admin_text = (
         f"🔔 **ΝΕΟ ΑΙΤΗΜΑ PAYSAFE** 🔔\n\n"
-        f"👤 Χρήστης ID: `{message.from_user.id}`\n"
+        f"🆔 Αίτημα #: `{req_id}`\n"
+        f"👤 Χρήστης ID: `{user_id}`\n"
         f"💰 Ποσό: **{amount}€**\n"
         f"🔢 Κωδικός: `{code}`"
     )
     
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Accept", callback_data=f"ps_acc_{message.from_user.id}_{amount}"),
-            InlineKeyboardButton(text="❌ Reject", callback_data=f"ps_rej_{message.from_user.id}")
+            InlineKeyboardButton(text="✅ Accept", callback_data=f"ps_acc_{req_id}"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"ps_rej_{req_id}")
         ]
     ])
     
-    # Ειδοποίηση σε όλους τους Admin
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(admin_id, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
@@ -556,14 +589,28 @@ async def admin_accept_paysafe(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         return
     
-    parts = callback.data.split("_")
-    user_id = int(parts[2])
-    amount = float(parts[3])
+    req_id = int(callback.data.split("_")[2])
     
     async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;", amount, user_id)
+        row = await conn.fetchrow("SELECT telegram_id, amount, status FROM paysafe_requests WHERE id = $1;", req_id)
         
-    await callback.message.edit_text(callback.message.text + "\n\n✅ **ΑΠΟΔΕΚΤΟ - Τα χρήματα πιστώθηκαν!**")
+        if not row:
+            await callback.answer("❌ Το αίτημα δεν βρέθηκε στη βάση!", show_alert=True)
+            return
+            
+        if row['status'] != 'pending':
+            await callback.answer("⚠️ Αυτό το αίτημα έχει ΉΔΗ ολοκληρωθεί (από εσένα ή τον άλλο admin)!", show_alert=True)
+            await callback.message.edit_reply_markup(reply_markup=None)
+            return
+            
+        user_id = row['telegram_id']
+        amount = row['amount']
+        
+        async with conn.transaction():
+            await conn.execute("UPDATE paysafe_requests SET status = 'accepted' WHERE id = $1;", req_id)
+            await conn.execute("UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;", amount, user_id)
+        
+    await callback.message.edit_text(callback.message.text + f"\n\n✅ **ΑΠΟΔΕΚΤΟ από {callback.from_user.first_name} - Τα χρήματα πιστώθηκαν!**")
     try:
         await bot.send_message(user_id, f"🎉 **Συγχαρητήρια!** Η κατάθεση PaySafe εγκρίθηκε. **Προστέθηκαν {amount}€**!", parse_mode="Markdown")
     except Exception:
@@ -575,10 +622,24 @@ async def admin_reject_paysafe(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         return
     
-    parts = callback.data.split("_")
-    user_id = int(parts[2])
+    req_id = int(callback.data.split("_")[2])
     
-    await callback.message.edit_text(callback.message.text + "\n\n❌ **ΑΠΟΡΡΙΦΘΗΚΕ!**")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT telegram_id, status FROM paysafe_requests WHERE id = $1;", req_id)
+        
+        if not row:
+            await callback.answer("❌ Το αίτημα δεν βρέθηκε στη βάση!", show_alert=True)
+            return
+            
+        if row['status'] != 'pending':
+            await callback.answer("⚠️ Αυτό το αίτημα έχει ΉΔΗ ολοκληρωθεί!", show_alert=True)
+            await callback.message.edit_reply_markup(reply_markup=None)
+            return
+            
+        user_id = row['telegram_id']
+        await conn.execute("UPDATE paysafe_requests SET status = 'rejected' WHERE id = $1;", req_id)
+    
+    await callback.message.edit_text(callback.message.text + f"\n\n❌ **ΑΠΟΡΡΙΦΘΗΚΕ από {callback.from_user.first_name}!**")
     try:
         await bot.send_message(user_id, "❌ Το αίτημα κατάθεσης PaySafe **απορρίφθηκε**.", parse_mode="Markdown")
     except Exception:
@@ -586,10 +647,27 @@ async def admin_reject_paysafe(callback: CallbackQuery):
     await callback.answer("Απορρίφθηκε!")
 
 
-# --- AUTOMATED CRYPTO FLOW (NOWPAYMENTS) ---
+# --- MANUAL CRYPTO FLOW ---
 @dp.callback_query(F.data == "crypto_start")
 async def crypto_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις (π.χ. 10):", parse_mode="Markdown")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="₿ Bitcoin (BTC)", callback_data="crypto_curr_BTC"),
+            InlineKeyboardButton(text="🔷 Ethereum (ETH)", callback_data="crypto_curr_ETH")
+        ],
+        [
+            InlineKeyboardButton(text="⚡ Litecoin (LTC)", callback_data="crypto_curr_LTC")
+        ]
+    ])
+    await callback.message.answer("🪙 **Επίλεξε το κρυπτονόμισμα** με το οποίο θέλεις να καταθέσεις:", reply_markup=keyboard, parse_mode="Markdown")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("crypto_curr_"))
+async def process_crypto_currency(callback: CallbackQuery, state: FSMContext):
+    currency = callback.data.split("_")[2]
+    await state.update_data(currency=currency)
+    
+    await callback.message.answer(f"💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να καταθέσεις σε **{currency}** (π.χ. 10 ή 20):", parse_mode="Markdown")
     await state.set_state(CryptoTopUp.waiting_for_amount)
     await callback.answer()
 
@@ -600,49 +678,134 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
         if amount <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Μη έγκυρο ποσό.")
+        await message.answer("❌ Μη έγκυρο ποσό. Σε παρακαλώ γράψε έναν αριθμό (π.χ. 10):")
         return
     
+    data = await state.get_data()
+    currency = data.get("currency", "BTC")
+    
+    await state.update_data(amount=amount)
+    
+    wallets = {
+        "BTC": BTC_WALLET,
+        "ETH": ETH_WALLET,
+        "LTC": LTC_WALLET
+    }
+    wallet_address = wallets.get(currency, "Δεν έχει οριστεί διεύθυνση")
+    
+    msg_text = (
+        f"📥 **Στοιχεία Πληρωμής ({currency})**\n\n"
+        f"💰 **Ποσό:** {amount}€\n"
+        f"🪙 **Νόμισμα:** {currency}\n\n"
+        f"📍 **Διεύθυνση Πορτοφολιού:**\n`{wallet_address}`\n\n"
+        f"📸 **Μόλις κάνεις τη μεταφορά, στείλε μου εδώ σε φωτογραφία το screenshot της συναλλαγής!**"
+    )
+    await message.answer(msg_text, parse_mode="Markdown")
+    await state.set_state(CryptoTopUp.waiting_for_screenshot)
+
+@dp.message(CryptoTopUp.waiting_for_screenshot, F.photo)
+async def process_crypto_screenshot(message: types.Message, state: FSMContext):
+    photo_file_id = message.photo[-1].file_id
+    data = await state.get_data()
+    amount = data.get("amount", 0.0)
+    currency = data.get("currency", "Crypto")
     user_id = message.from_user.id
     
-    if not NOWPAYMENTS_API_KEY:
-        await state.clear()
-        await message.answer("❌ Το NOWPayments API Key δεν έχει ρυθμιστεί στο Railway.", parse_mode="Markdown")
-        return
-
-    url = "https://api.nowpayments.io/v1/invoice"
-    headers = {
-        "x-api-key": NOWPAYMENTS_API_KEY,
-        "Content-Type": "application/json"
-    }
+    async with db_pool.acquire() as conn:
+        req_id = await conn.fetchval(
+            "INSERT INTO crypto_requests (telegram_id, amount, currency, photo_file_id) VALUES ($1, $2, $3, $4) RETURNING id;",
+            user_id, amount, currency, photo_file_id
+        )
     
-    payload = {
-        "price_amount": amount,
-        "price_currency": "EUR",
-        "pay_currency": "ltc",
-        "order_id": f"user_{user_id}_crypto_{amount}",
-        "order_description": f"Wallet Top-up {amount} EUR"
-    }
+    admin_caption = (
+        f"🔔 **ΝΕΟ ΑΙΤΗΜΑ CRYPTO** 🔔\n\n"
+        f"🆔 Αίτημα #: `{req_id}`\n"
+        f"👤 Χρήστης ID: `{user_id}`\n"
+        f"💰 Ποσό: **{amount}€**\n"
+        f"🪙 Νόμισμα: **{currency}**"
+    )
     
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as response:
-            if response.status in [200, 201]:
-                data = await response.json()
-                invoice_url = data.get("invoice_url")
-                
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=f"⚡ Πληρωμή {amount}€ με Crypto", url=invoice_url)]
-                ])
-                await message.answer(
-                    f"🔗 Δημιουργήθηκε ο αυτόματος σύνδεσμος πληρωμής για **{amount}€**.\n\n"
-                    f"Πάτα το παρακάτω κουμπί για να πληρώσεις:",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown"
-                )
-            else:
-                await message.answer("❌ Σφάλμα επικοινωνίας με την υπηρεσία πληρωμών.")
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Accept", callback_data=f"cr_acc_{req_id}"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"cr_rej_{req_id}")
+        ]
+    ])
     
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_photo(chat_id=admin_id, photo=photo_file_id, caption=admin_caption, reply_markup=admin_kb, parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Crypto sending to admin {admin_id} failed: {e}")
+            
+    await message.answer("✅ Το screenshot στάλθηκε επιτυχώς! Μόλις ο διαχειριστής επιβεβαιώσει τη συναλλαγή, τα χρήματα θα μπουν στο πορτοφόλι σου.")
     await state.clear()
+
+@dp.message(CryptoTopUp.waiting_for_screenshot, ~F.photo)
+async def process_crypto_not_photo(message: types.Message):
+    await message.answer("❌ Παρακαλώ στείλε **φωτογραφία (screenshot)** της συναλλαγής!")
+
+@dp.callback_query(F.data.startswith("cr_acc_"))
+async def admin_accept_crypto(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+    
+    req_id = int(callback.data.split("_")[2])
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT telegram_id, amount, currency, status FROM crypto_requests WHERE id = $1;", req_id)
+        
+        if not row:
+            await callback.answer("❌ Το αίτημα δεν βρέθηκε στη βάση!", show_alert=True)
+            return
+            
+        if row['status'] != 'pending':
+            await callback.answer("⚠️ Αυτό το αίτημα έχει ΉΔΗ ολοκληρωθεί (από εσένα ή τον άλλο admin)!", show_alert=True)
+            await callback.message.edit_reply_markup(reply_markup=None)
+            return
+            
+        user_id = row['telegram_id']
+        amount = row['amount']
+        
+        async with conn.transaction():
+            await conn.execute("UPDATE crypto_requests SET status = 'accepted' WHERE id = $1;", req_id)
+            await conn.execute("UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;", amount, user_id)
+        
+    await callback.message.edit_caption(caption=callback.message.caption + f"\n\n✅ **ΑΠΟΔΕΚΤΟ από {callback.from_user.first_name} - Τα χρήματα πιστώθηκαν!**")
+    try:
+        await bot.send_message(user_id, f"🎉 **Συγχαρητήρια!** Η κατάθεση {row['currency']} εγκρίθηκε. **Προστέθηκαν {amount}€**!", parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer("Εγκρίθηκε!")
+
+@dp.callback_query(F.data.startswith("cr_rej_"))
+async def admin_reject_crypto(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+    
+    req_id = int(callback.data.split("_")[2])
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT telegram_id, currency, status FROM crypto_requests WHERE id = $1;", req_id)
+        
+        if not row:
+            await callback.answer("❌ Το αίτημα δεν βρέθηκε στη βάση!", show_alert=True)
+            return
+            
+        if row['status'] != 'pending':
+            await callback.answer("⚠️ Αυτό το αίτημα έχει ΉΔΗ ολοκληρωθεί!", show_alert=True)
+            await callback.message.edit_reply_markup(reply_markup=None)
+            return
+            
+        user_id = row['telegram_id']
+        await conn.execute("UPDATE crypto_requests SET status = 'rejected' WHERE id = $1;", req_id)
+    
+    await callback.message.edit_caption(caption=callback.message.caption + f"\n\n❌ **ΑΠΟΡΡΙΦΘΗΚΕ από {callback.from_user.first_name}!**")
+    try:
+        await bot.send_message(user_id, f"❌ Το αίτημα κατάθεσης {row['currency']} **απορρίφθηκε**.", parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer("Απορρίφθηκε!")
 
 
 # --- CATALOG & CART HANDLERS ---
@@ -824,7 +987,10 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 return
                 
             new_balance = user['balance'] - total_price
-            points_earned = int(total_price) 
+            
+            # Κάθε 1€ = 5 πόντοι
+            points_earned = int(total_price * 5) 
+            
             old_points = user['lifetime_points']
             new_total_points = old_points + points_earned
             
@@ -977,11 +1143,11 @@ async def show_levels_info_callback(callback: CallbackQuery):
     text = (
         "📊 **Βαθμίδες (Levels) & Πόντοι**\n\n"
         "Αυτά είναι τα διαθέσιμα επίπεδα που μπορείς να ξεκλειδώσεις μαζεύοντας πόντους από τις αγορές σου:\n\n"
-        " **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
-        " **Τολμηρός💋🔞** (150 - 299 πόντοι)\n"
-        " **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι)\n"
-        " **Αφέντης💋👑🔞** (500 - 999 πόντοι)\n"
-        " **VIP🔞❤️ ** (1000+ πόντοι)\n\n"
+        "🐣🔞 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
+        "💋🔞 **Τολμηρός💋🔞** (150 - 299 πόντοι)\n"
+        "👀🔥🔞 **Ορεξάτος** (300 - 499 πόντοι)\n"
+        "💋👑🔞 **Αφέντης💋👑🔞** (500 - 999 πόντοι)\n"
+        "🔞❤️ **VIP 🔞❤️** (1000+ πόντοι)\n\n"
         f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
         f"{bar_string}\n"
         f"🎯 {next_level_string}"
@@ -1031,4 +1197,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main())fg
