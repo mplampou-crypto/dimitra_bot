@@ -128,15 +128,7 @@ async def init_db():
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
     if points >= 1000:
-        return "Ultimate VIP❤️🔞"
-    elif points >= 500:
-        return "Αφέντης💋👑🔞" 
-    elif points >= 300:
-        return "Ορεξάτος👀🔥🔞" 
-    elif points >= 150:
-        return "Τολμηρός💋🔞"
-    else:
-        return "Πρωτάρης🐣🔞"
+        return c
 
 def get_level_progress(points: int):
     # Υπολογίζει τα στατιστικά για την οπτική μπάρα προόδου
@@ -970,12 +962,11 @@ async def show_levels_info_callback(callback: CallbackQuery):
     text = (
         "📊 **Βαθμίδες (Levels) & Πόντοι**\n\n"
         "Αυτά είναι τα διαθέσιμα επίπεδα που μπορείς να ξεκλειδώσεις μαζεύοντας πόντους από τις αγορές σου:\n\n"
-        "🌱 **Newcomer** (0 - 149 πόντοι)\n"
-        "🥉 **Bronze** (150 - 299 πόντοι)\n"
-        "🥈 **Silver** (300 - 499 πόντοι)\n"
-        "🥇 **Gold** (500 - 999 πόντοι)\n"
-        "💎 **Diamond** (1000 - 1999 πόντοι)\n"
-        "👑 **VIP 🔞❤️** (2000+ πόντοι)\n\n"
+        "🐣🔞 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
+        "💋🔞 **Τολμηρός💋🔞** (150 - 299 πόντοι)\n"
+        "👀🔥🔞 **Ορεξάτοςc** (300 - 499 πόντοι)\n"
+        "💋👑🔞 **Αφέντης💋👑🔞** (500 - 999 πόντοι)\n"
+        "🔞❤️ **VIP 🔞❤️** (1000+ πόντοι)\n\n"
         f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
         f"{bar_string}\n"
         f"🎯 {next_level_string}"
