@@ -27,6 +27,9 @@ GROUP_LINK = "https://t.me/+h9QI608rXMUxOWI0"
 PREMIUM_GROUP_LINK = "https://t.me/+tJ-TlvZpt2Y5YTA8" # ΑΛΛΑΞΕ ΤΟ ΜΕ ΤΟ LINK ΤΗΣ ΣΥΝΔΡΟΜΗΤΙΚΗΣ ΟΜΑΔΑΣ
 ADMIN_LINK = "https://t.me/dimitrasavvidi"
 
+# Το γραφικό που θα στέλνεται όταν κάποιος έχει ήδη εκκρεμές αίτημα
+PENDING_GRAPHIC_URL = "https://dummyimage.com/600x400/1a1a1a/ffcc00&text=Please+Wait+For+Approval"
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
@@ -89,9 +92,6 @@ async def init_db():
                 duration_months INT DEFAULT 0
             );
         """)
-        
-        # ΠΡΟΣΩΡΙΝΗ ΕΝΤΟΛΗ ΔΙΑΓΡΑΦΗΣ (ΝΑ ΤΗ ΣΒΗΣΕΙΣ ΜΕΤΑ ΤΗΝ ΠΡΩΤΗ ΕΚΤΕΛΕΣΗ)
-        
         
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS active_subscriptions (
@@ -232,6 +232,13 @@ async def get_conversion(amount_eur: float, crypto_symbol: str):
     except Exception as e:
         logging.error(f"Error fetching crypto prices from Bybit: {e}")
         return 0.0, 0.0
+
+async def has_pending_request(user_id: int) -> bool:
+    """ Ελέγχει αν ο χρήστης έχει ήδη κάποιο εκκρεμές αίτημα κατάθεσης """
+    async with db_pool.acquire() as conn:
+        pending_ps = await conn.fetchval("SELECT 1 FROM paysafe_requests WHERE telegram_id = $1 AND status = 'pending';", user_id)
+        pending_cr = await conn.fetchval("SELECT 1 FROM crypto_requests WHERE telegram_id = $1 AND status = 'pending';", user_id)
+        return bool(pending_ps or pending_cr)
 
 async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
     async with db_pool.acquire() as conn:
@@ -639,6 +646,15 @@ async def show_wallet(message: types.Message):
 # --- PAYSAFE FLOW ---
 @dp.callback_query(F.data == "paysafe_start")
 async def paysafe_start(callback: CallbackQuery, state: FSMContext):
+    if await has_pending_request(callback.from_user.id):
+        await callback.message.answer_photo(
+            photo=PENDING_GRAPHIC_URL,
+            caption="⏳ **Εκκρεμεί ήδη ένα αίτημα κατάθεσης!**\n\nΠαρακαλώ περίμενε να εγκριθεί ή να απορριφθεί η προηγούμενη κατάθεσή σου από τους διαχειριστές πριν κάνεις καινούρια.",
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+
     await callback.message.answer("💶 **Πληκτρολόγησε το ποσό** που θέλεις να καταθέσεις (π.χ. 10 ή 20):", parse_mode="Markdown")
     await state.set_state(PaySafeTopUp.waiting_for_amount)
     await callback.answer()
@@ -765,6 +781,15 @@ async def admin_reject_paysafe(callback: CallbackQuery):
 # --- MANUAL CRYPTO FLOW ---
 @dp.callback_query(F.data == "crypto_start")
 async def crypto_start(callback: CallbackQuery, state: FSMContext):
+    if await has_pending_request(callback.from_user.id):
+        await callback.message.answer_photo(
+            photo=PENDING_GRAPHIC_URL,
+            caption="⏳ **Εκκρεμεί ήδη ένα αίτημα κατάθεσης!**\n\nΠαρακαλώ περίμενε να εγκριθεί ή να απορριφθεί η προηγούμενη κατάθεσή σου από τους διαχειριστές πριν κάνεις καινούρια.",
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="₿ Bitcoin (BTC)", callback_data="crypto_curr_BTC"),
