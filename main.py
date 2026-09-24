@@ -977,7 +977,8 @@ async def show_catalog(message: types.Message):
         
     for item in items:
         if item['is_subscription']:
-            title = f"⭐ **Συνδρομή Ομάδας** ({item['duration_months']} Μήνας/ες)\n\n"
+            months_word = "Μήνας" if item['duration_months'] == 1 else "Μήνες"
+            title = f"⭐ **Συνδρομή Ομάδας** ({item['duration_months']} {months_word})\n\n"
         else:
             title = f"🔒 **Κλειδωμένο Αρχείο**\n\n"
             
