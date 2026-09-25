@@ -322,7 +322,7 @@ def main_menu():
             [KeyboardButton(text="🛍️ Κατάλογος"), KeyboardButton(text="🛒 Καλάθι")],
             [KeyboardButton(text="👛 Πορτοφόλι"), KeyboardButton(text="👤 Το Προφίλ μου")],
             [KeyboardButton(text="🎁 Κλήρωση"), KeyboardButton(text="🎟️ Εκπτωτικοί Κωδικοί")],
-            [KeyboardButton(text="👥 Κοινότητα & Επικοινωνία"), KeyboardButton(text="ℹ️ Info")],
+            [KeyboardButton(text="🔗 Links & Επικοινωνία"), KeyboardButton(text="ℹ️ Info")],
             [KeyboardButton(text="Προβολή Υλικού 🔞")]
         ],
         resize_keyboard=True
@@ -331,7 +331,7 @@ def main_menu():
 def support_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="👥 Ομάδα / Κανάλι", url=GROUP_LINK)],
+            [InlineKeyboardButton(text="👥 Ομάδα ", url=GROUP_LINK)],
             [InlineKeyboardButton(text="💬 Προσωπικό Μήνυμα", url=ADMIN_LINK)]
         ]
     )
@@ -1443,7 +1443,7 @@ async def cmd_start(message: types.Message):
         reply_markup=main_menu()
     )
 
-@dp.message(F.text == "👥 Κοινότητα & Επικοινωνία")
+@dp.message(F.text == "🔗 Links & Επικοινωνία")
 async def show_support(message: types.Message):
     await message.answer(
         "Μπορείς να συνδεθείς στην κοινότητά μας ή να επικοινωνήσεις απευθείας μαζί μας παρακάτω:",
@@ -1567,7 +1567,21 @@ async def show_giveaway(message: types.Message):
 
 @dp.message(F.text == "ℹ️ Info")
 async def show_info(message: types.Message):
-    await message.answer("Καλώς ήρθες! Είμαι η Δήμητρα, 22 χρόνων, με βάση τη Θεσσαλονίκη. Χαίρομαι που με βρήκες. Εδώ μέσα μπορείς να ανακαλύψεις, να ξεκλειδώσεις και να αγοράσεις αυτόματα το πιο ξεχωριστό μου υλικό. Περιηγήσου στο μενού παρακάτω για να δεις τις επιλογές. Αν θες να τα πούμε, στείλε μου προσωπικό μήνυμα! Σε περιμένω... ❤️💋🔞")
+    # Προσθήκη του Inline Keyboard κάτω από το κείμενο του Info
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Προβολή Υλικού 🔞", callback_data="open_catalog")]
+    ])
+    await message.answer(
+        "Καλώς ήρθες! Είμαι η Δήμητρα, 22 χρόνων, με βάση τη Θεσσαλονίκη. Χαίρομαι που με βρήκες. Εδώ μέσα μπορείς να ανακαλύψεις, να ξεκλειδώσεις και να αγοράσεις αυτόματα το πιο ξεχωριστό μου υλικό. Περιηγήσου στο μενού παρακάτω για να δεις τις επιλογές. Αν θες να τα πούμε, στείλε μου προσωπικό μήνυμα! Σε περιμένω... ❤️💋🔞",
+        reply_markup=kb
+    )
+
+# Συνάρτηση Callback για το κουμπί του καταλόγου
+@dp.callback_query(F.data == "open_catalog")
+async def inline_show_catalog(callback: CallbackQuery):
+    await callback.answer()
+    # Καλεί απευθείας την υπάρχουσα συνάρτηση του καταλόγου περνώντας το callback.message
+    await show_catalog(callback.message)
 
 # --- MAIN EXECUTION ---
 async def main():
