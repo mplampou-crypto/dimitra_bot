@@ -229,25 +229,29 @@ async def get_conversion(amount_eur: float, crypto_symbol: str):
             usdt_amount = 0.0
             crypto_amount = 0.0
             
-            async with session.get("https://api.bybit.com/v5/market/tickers?category=spot&symbol=EURUSDT") as resp:
+            # 1. Βρίσκουμε την ισοτιμία EUR σε USDT από τη Binance
+            async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=EURUSDT") as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    result_list = data.get("result", {}).get("list", [])
-                    if result_list:
-                        eur_to_usdt = float(result_list[0]['lastPrice'])
-                        usdt_amount = amount_eur * eur_to_usdt
+                    eur_to_usdt = float(data['price'])
+                    usdt_amount = amount_eur * eur_to_usdt
+                else:
+                    logging.error(f"Binance EURUSDT error: {resp.status}")
 
-            async with session.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={crypto_symbol}EUR") as resp:
+            # 2. Βρίσκουμε την τιμή του Crypto σε USDT (π.χ. BTCUSDT, ETHUSDT)
+            symbol = f"{crypto_symbol}USDT"
+            async with session.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}") as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    result_list = data.get("result", {}).get("list", [])
-                    if result_list:
-                        crypto_price_eur = float(result_list[0]['lastPrice'])
-                        crypto_amount = amount_eur / crypto_price_eur
+                    crypto_price_usdt = float(data['price'])
+                    if crypto_price_usdt > 0 and usdt_amount > 0:
+                        crypto_amount = usdt_amount / crypto_price_usdt
+                else:
+                    logging.error(f"Binance {symbol} error: {resp.status}")
                     
             return usdt_amount, crypto_amount
     except Exception as e:
-        logging.error(f"Error fetching crypto prices from Bybit: {e}")
+        logging.error(f"Error fetching crypto prices from Binance: {e}")
         return 0.0, 0.0
 
 async def has_pending_request(user_id: int) -> bool:
@@ -710,6 +714,12 @@ async def show_wallet(message: types.Message):
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
+# --- CANCEL DEPOSIT HANDLER ---
+@dp.callback_query(F.data == "cancel_deposit")
+async def cancel_deposit_flow(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Η διαδικασία κατάθεσης ακυρώθηκε.", parse_mode="Markdown")
+    await callback.answer("Ακυρώθηκε")
 
 # --- PAYSAFE FLOW ---
 @dp.callback_query(F.data == "paysafe_start")
@@ -723,23 +733,48 @@ async def paysafe_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό** που θέλεις να καταθέσεις (π.χ. 10 ή 20):", parse_mode="Markdown")
+    # Δημιουργία κουμπιών με τα έτοιμα ποσά
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="5€", callback_data="ps_amt_5"),
+            InlineKeyboardButton(text="10€", callback_data="ps_amt_10"),
+            InlineKeyboardButton(text="25€", callback_data="ps_amt_25")
+        ],
+        [
+            InlineKeyboardButton(text="50€", callback_data="ps_amt_50"),
+            InlineKeyboardButton(text="100€", callback_data="ps_amt_100")
+        ]
+    ])
+
+    await callback.message.answer("💶 **Επίλεξε το ποσό της PaySafe** που θέλεις να καταθέσεις:", reply_markup=keyboard, parse_mode="Markdown")
     await state.set_state(PaySafeTopUp.waiting_for_amount)
     await callback.answer()
 
-@dp.message(PaySafeTopUp.waiting_for_amount, F.text)
-async def process_paysafe_amount(message: types.Message, state: FSMContext):
-    try:
-        amount = float(message.text.replace(",", "."))
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Μη έγκυρο ποσό. Σε παρακαλώ γράψε έναν αριθμό (π.χ. 10):")
-        return
+# Διαβάζει το πάτημα του κουμπιού αντί για πληκτρολόγηση κειμένου
+@dp.callback_query(PaySafeTopUp.waiting_for_amount, F.data.startswith("ps_amt_"))
+async def process_paysafe_amount_callback(callback: CallbackQuery, state: FSMContext):
+    amount = float(callback.data.split("_")[2])
     
     await state.update_data(amount=amount)
-    await message.answer("🔢 **Τώρα γράψε τον 12-ψήφιο κωδικό της PaySafe σου:**", parse_mode="Markdown")
+    
+    # Προσθήκη κουμπιού ακύρωσης
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Ακύρωση Κατάθεσης", callback_data="cancel_deposit")]
+    ])
+    
+    await callback.message.edit_text(
+        f"💶 Επέλεξες ποσό: **{amount}€**\n\n🔢 **Τώρα γράψε τον 12-ψήφιο κωδικό της PaySafe σου:**", 
+        reply_markup=cancel_kb,
+        parse_mode="Markdown"
+    )
+    
     await state.set_state(PaySafeTopUp.waiting_for_code)
+    await callback.answer()
+
+# Αν ο χρήστης προσπαθήσει να γράψει νούμερο αντί να πατήσει τα κουμπιά
+@dp.message(PaySafeTopUp.waiting_for_amount)
+async def process_paysafe_amount_invalid(message: types.Message):
+    await message.answer("❌ Παρακαλώ επίλεξε ένα από τα έτοιμα ποσά (5, 10, 25, 50, 100) πατώντας τα αντίστοιχα κουμπιά πιο πάνω.")
 
 @dp.message(PaySafeTopUp.waiting_for_code, F.text)
 async def process_paysafe_code(message: types.Message, state: FSMContext):
@@ -915,6 +950,11 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
     crypto_text = f"{crypto_amt:.6f}" if crypto_amt > 0 else "Αγνωστο (API Error)"
     usdt_text = f"{usdt_amt:.2f}" if usdt_amt > 0 else "Αγνωστο (API Error)"
     
+    # Προσθήκη κουμπιού ακύρωσης
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Ακύρωση Κατάθεσης", callback_data="cancel_deposit")]
+    ])
+    
     msg_text = (
         f"📥 **Στοιχεία Πληρωμής ({currency})**\n\n"
         f"💶 **Ποσό Κατάθεσης:** {amount}€\n"
@@ -925,7 +965,7 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
         f"📸 **Μόλις κάνεις τη μεταφορά, στείλε μου εδώ σε φωτογραφία το screenshot της συναλλαγής!**\n"
         f"_(Σημείωση: Φρόντισε να στείλεις την ακριβή αξία σε Crypto ή USDT)_"
     )
-    await message.answer(msg_text, parse_mode="Markdown")
+    await message.answer(msg_text, reply_markup=cancel_kb, parse_mode="Markdown")
     await state.set_state(CryptoTopUp.waiting_for_screenshot)
 
 @dp.message(CryptoTopUp.waiting_for_screenshot, F.photo)
