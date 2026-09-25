@@ -1356,7 +1356,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                     pass
             
             # Μήνυμα & Smart Link Χρήστη
-            encoded_text = urllib.parse.quote(f"Γεια σου Δήμητρα! Αγόρασα custom παραγγελία. Ο κωδικός μου είναι #{order_code} και θέλω να συνεννοηθούμε για την κατασκευή.")
+            encoded_text = urllib.parse.quote(f"Γεια σου Δήμητρα! Ο κωδικός μου είναι #{order_code}.")
             smart_link = f"{ADMIN_LINK}?text={encoded_text}"
             
             kb = InlineKeyboardMarkup(inline_keyboard=[[
