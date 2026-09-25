@@ -3,6 +3,9 @@ import datetime
 import logging
 import os
 import aiohttp
+import random
+import string
+import urllib.parse
 from decimal import Decimal
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -34,24 +37,26 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
-# --- FSM STATES FOR ADMIN ---
+# --- FSM STATES ---
 class UploadMedia(StatesGroup):
     waiting_for_files = State()
     waiting_for_description = State()
     waiting_for_price = State()
 
-# --- FSM STATES FOR PAYSAFE ---
+class UploadCustom(StatesGroup):
+    waiting_for_files = State()
+    waiting_for_description = State()
+    waiting_for_price = State()
+
 class PaySafeTopUp(StatesGroup):
     waiting_for_amount = State()
     waiting_for_code = State()
 
-# --- FSM STATES FOR MANUAL CRYPTO ---
 class CryptoTopUp(StatesGroup):
     waiting_for_currency = State()
     waiting_for_amount = State()
     waiting_for_screenshot = State()
 
-# --- FSM STATES FOR PROMO CODES ---
 class CartPromo(StatesGroup):
     waiting_for_promo = State()
 
@@ -89,7 +94,8 @@ async def init_db():
                 description TEXT,
                 price NUMERIC(10, 2) NOT NULL,
                 is_subscription BOOLEAN DEFAULT FALSE,
-                duration_months INT DEFAULT 0
+                duration_months INT DEFAULT 0,
+                is_custom BOOLEAN DEFAULT FALSE
             );
         """)
         
@@ -169,6 +175,7 @@ async def init_db():
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS media_types TEXT[];")
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS is_subscription BOOLEAN DEFAULT FALSE;")
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS duration_months INT DEFAULT 0;")
+        await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS is_custom BOOLEAN DEFAULT FALSE;")
 
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
@@ -205,8 +212,10 @@ def get_level_progress(points: int):
     points_needed = max_p - points
     return f"{bar} {int(progress_percent)}%", f"{points_needed} πόντοι για ξεκλείδωμα του {next_level}!"
 
+def generate_order_code():
+    return "KB-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
 async def get_conversion(amount_eur: float, crypto_symbol: str):
-    """ Υπολογίζει Live τις τιμές από την Bybit (V5 API - Χωρίς API Key) """
     try:
         async with aiohttp.ClientSession() as session:
             usdt_amount = 0.0
@@ -234,7 +243,6 @@ async def get_conversion(amount_eur: float, crypto_symbol: str):
         return 0.0, 0.0
 
 async def has_pending_request(user_id: int) -> bool:
-    """ Ελέγχει αν ο χρήστης έχει ήδη κάποιο εκκρεμές αίτημα κατάθεσης """
     async with db_pool.acquire() as conn:
         pending_ps = await conn.fetchval("SELECT 1 FROM paysafe_requests WHERE telegram_id = $1 AND status = 'pending';", user_id)
         pending_cr = await conn.fetchval("SELECT 1 FROM crypto_requests WHERE telegram_id = $1 AND status = 'pending';", user_id)
@@ -363,12 +371,13 @@ async def admin_panel(message: types.Message):
     await message.answer(
         "👑 **Κρυφό Μενού Διαχειριστή**\n\n"
         "📜 `/add_media` - Ανέβασμα κανονικού αρχείου/φωτό\n"
-        "⭐ `/add_sub <Τιμή> <Μήνες> <Περιγραφή>` - Προσθήκη συνδρομής ομάδας (Π.χ. `/add_sub 15.00 1 VIP Ομάδα 1 Μήνας`)\n"
+        "⌨️ `/add_custom` - Ανέβασμα Custom Προϊόντος (με κωδικό παραγγελίας)\n"
+        "⭐ `/add_sub   ` - Προσθήκη συνδρομής ομάδας\n"
         "🗑️ `/remove_media` - Διαγραφή προσφοράς από τον κατάλογο\n"
-        "🎟️ `/add_promo <κωδικός> <έκπτωση%> <ώρες> <έξτρα εισιτήρια>`\n"
-        "❌ `/del_promo <κωδικός>`\n"
-        "💸 `/give_money <ID> <Ποσό>`\n"
-        "⏳ `/set_giveaway <ώρες>`",
+        "🎟️ `/add_promo    `\n"
+        "❌ `/del_promo `\n"
+        "💸 `/give_money  `\n"
+        "⏳ `/set_giveaway `",
         parse_mode="Markdown"
     )
 
@@ -380,8 +389,8 @@ async def admin_add_subscription(message: types.Message):
     args = message.text.split(maxsplit=3)
     if len(args) < 4:
         await message.answer(
-            "⚠️ Χρήση: `/add_sub <Τιμή> <Μήνες> <Περιγραφή>`\n"
-            "Παράδειγμα: `/add_sub 10.00 1 Πρόσβαση στην Premium Ομάδα για 1 μήνα`",
+            "⚠️ Χρήση: `/add_sub   `\n"
+            "Παράδειγμα: `/add_sub 10 1 ❌ ΑΠΟ 20€ -> ✅ ΜΟΝΟ 10€! Πρόσβαση στην VIP ομάδα για 1 Μήνα.`",
             parse_mode="Markdown"
         )
         return
@@ -398,8 +407,8 @@ async def admin_add_subscription(message: types.Message):
         
     async with db_pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months) 
-               VALUES (ARRAY[]::TEXT[], ARRAY[]::TEXT[], $1, $2, TRUE, $3);""",
+            """INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months, is_custom) 
+               VALUES (ARRAY[]::TEXT[], ARRAY[]::TEXT[], $1, $2, TRUE, $3, FALSE);""",
             description, price, months
         )
         
@@ -413,7 +422,7 @@ async def admin_add_promo(message: types.Message):
     args = message.text.split()
     if len(args) < 4 or len(args) > 5:
         await message.answer(
-            "⚠️ Χρήση: `/add_promo <ΚΩΔΙΚΟΣ> <Έκπτωση%> <Ώρες> [Extra_Εισιτήρια]`\n"
+            "⚠️ Χρήση: `/add_promo    [Extra_Εισιτήρια]`\n"
             "Παράδειγμα (20% έκπτωση για 48 ώρες και 2 εισιτήρια): `/add_promo VIP 20 48 2`", 
             parse_mode="Markdown"
         )
@@ -448,7 +457,7 @@ async def admin_del_promo(message: types.Message):
         
     args = message.text.split()
     if len(args) != 2:
-        await message.answer("⚠️ Χρήση: `/del_promo <ΚΩΔΙΚΟΣ>`", parse_mode="Markdown")
+        await message.answer("⚠️ Χρήση: `/del_promo `", parse_mode="Markdown")
         return
         
     code = args[1].upper()
@@ -467,7 +476,7 @@ async def set_giveaway_timer(message: types.Message):
 
     args = message.text.split()
     if len(args) != 2:
-        await message.answer("⚠️ Χρήση: `/set_giveaway <ώρες>`", parse_mode="Markdown")
+        await message.answer("⚠️ Χρήση: `/set_giveaway `", parse_mode="Markdown")
         return
 
     try:
@@ -492,7 +501,7 @@ async def admin_give_money(message: types.Message):
 
     args = message.text.split()
     if len(args) != 3:
-        await message.answer("⚠️ Χρήση: `/give_money <Telegram_ID> <Ποσό>`", parse_mode="Markdown")
+        await message.answer("⚠️ Χρήση: `/give_money  `", parse_mode="Markdown")
         return
 
     try:
@@ -515,6 +524,79 @@ async def admin_give_money(message: types.Message):
         await bot.send_message(target_id, f"🎉 Το υπόλοιπό σου πιστώθηκε με {amount}€ από τον διαχειριστή!", parse_mode="Markdown")
     except Exception:
         pass
+
+# --- ADMIN UPLOAD CUSTOM PRODUCT ---
+@dp.message(Command("add_custom"))
+async def start_custom_upload(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+        
+    await state.update_data(file_ids=[], media_types=[])
+    await message.answer(
+        "⌨️ **Δημιουργία Custom Προϊόντος (π.χ. Keyboard)**\n\n"
+        "Στείλε μου **μία-μία** τις φωτογραφίες ή τα βίντεο του προϊόντος.\nΜόλις τελειώσεις, στείλε την εντολή: `/done_custom`",
+        parse_mode="Markdown"
+    )
+    await state.set_state(UploadCustom.waiting_for_files)
+
+@dp.message(UploadCustom.waiting_for_files, F.photo | F.video)
+async def receive_custom_files(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    file_ids = data.get("file_ids", [])
+    media_types = data.get("media_types", [])
+
+    if message.photo:
+        file_ids.append(message.photo[-1].file_id)
+        media_types.append("photo")
+    elif message.video:
+        file_ids.append(message.video.file_id)
+        media_types.append("video")
+
+    await state.update_data(file_ids=file_ids, media_types=media_types)
+    await message.answer(f"✅ Προστέθηκε! (Συνολικά: {len(file_ids)} αρχεία). Στείλε κι άλλα ή γράψε `/done_custom`.")
+
+@dp.message(UploadCustom.waiting_for_files, Command("done_custom"))
+async def finish_custom_upload(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    file_ids = data.get("file_ids", [])
+
+    if not file_ids:
+        await message.answer("⚠️ Δεν έχεις στείλει κανένα αρχείο! Στείλε τουλάχιστον μία φωτογραφία ή βίντεο.")
+        return
+
+    await message.answer("✍️ Γράψε την **περιγραφή** που θα συνοδεύει το custom προϊόν:", parse_mode="Markdown")
+    await state.set_state(UploadCustom.waiting_for_description)
+
+@dp.message(UploadCustom.waiting_for_description, F.text)
+async def receive_custom_description(message: types.Message, state: FSMContext):
+    await state.update_data(description=message.text)
+    await message.answer("💰 Όρισε την **τιμή** σε ευρώ (π.χ. 65.50):", parse_mode="Markdown")
+    await state.set_state(UploadCustom.waiting_for_price)
+
+@dp.message(UploadCustom.waiting_for_price, F.text)
+async def receive_custom_price(message: types.Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", "."))
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Παρακαλώ γράψε έναν έγκυρο αριθμό (π.χ. 50).")
+        return
+
+    data = await state.get_data()
+    file_ids = data['file_ids']
+    media_types = data['media_types']
+    description = data['description']
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months, is_custom) VALUES ($1, $2, $3, $4, FALSE, 0, TRUE)",
+            file_ids, media_types, description, price
+        )
+        
+    await message.answer(f"✅ Το Custom Προϊόν ανέβηκε επιτυχώς στον κατάλογο!")
+    await state.clear()
+
 
 # --- ADMIN UPLOAD MEDIA (ΠΟΛΛΑΠΛΑ ΑΡΧΕΙΑ) ---
 @dp.message(Command("add_media"))
@@ -581,7 +663,7 @@ async def receive_price(message: types.Message, state: FSMContext):
 
     async with db_pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months) VALUES ($1, $2, $3, $4, FALSE, 0)",
+            "INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months, is_custom) VALUES ($1, $2, $3, $4, FALSE, 0, FALSE)",
             file_ids, media_types, description, price
         )
         
@@ -595,7 +677,7 @@ async def admin_remove_media(message: types.Message):
         return
     
     async with db_pool.acquire() as conn:
-        items = await conn.fetch("SELECT id, description, price, is_subscription FROM locked_media;")
+        items = await conn.fetch("SELECT id, description, price, is_subscription, is_custom FROM locked_media;")
     
     if not items:
         await message.answer("Ο κατάλογος είναι άδειος! Δεν υπάρχουν προσφορές για διαγραφή.")
@@ -604,7 +686,12 @@ async def admin_remove_media(message: types.Message):
     inline_keyboard = []
     for item in items:
         desc = item['description'][:30] + "..." if len(item['description']) > 30 else item['description']
-        prefix = "⭐ [Συνδρομή] " if item['is_subscription'] else "📦 "
+        if item['is_subscription']:
+            prefix = "⭐ [Συνδρομή] "
+        elif item.get('is_custom'):
+            prefix = "⌨️ [Custom] "
+        else:
+            prefix = "📦 "
         inline_keyboard.append([InlineKeyboardButton(text=f"🗑️ Διαγραφή: {prefix}{desc} ({item['price']}€)", callback_data=f"admindel_{item['id']}")])
     
     await message.answer(
@@ -979,13 +1066,23 @@ async def show_catalog(message: types.Message):
         if item['is_subscription']:
             months_word = "Μήνας" if item['duration_months'] == 1 else "Μήνες"
             title = f"⭐ **Συνδρομή Ομάδας** ({item['duration_months']} {months_word})\n\n"
+        elif item.get('is_custom'):
+            title = f"⌨️ **Custom Παραγγελία**\n\n"
         else:
             title = f"🔒 **Κλειδωμένο Αρχείο**\n\n"
             
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"🛒 Προσθήκη στο Καλάθι ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
         ])
-        await message.answer(f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
+        
+        # Αν η προσφορά έχει εικόνες/βίντεο, στείλε και το πρώτο αρχείο μαζί με το κείμενο, αλλιώς μόνο κείμενο
+        if item['file_ids'] and len(item['file_ids']) > 0:
+            if item['media_types'][0] == "photo":
+                await message.answer_photo(photo=item['file_ids'][0], caption=f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
+            else:
+                await message.answer_video(video=item['file_ids'][0], caption=f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
+        else:
+            await message.answer(f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("addcart_"))
 async def process_add_to_cart(callback: CallbackQuery):
@@ -1119,7 +1216,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
     try:
         async with db_pool.acquire() as conn:
             cart_items = await conn.fetch("""
-                SELECT m.id, m.description, m.price, m.file_ids, m.media_types, m.is_subscription, m.duration_months
+                SELECT m.id, m.description, m.price, m.file_ids, m.media_types, m.is_subscription, m.duration_months, m.is_custom
                 FROM cart c
                 JOIN locked_media m ON c.media_id = m.id
                 WHERE c.telegram_id = $1;
@@ -1214,7 +1311,40 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 
         await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
         
-        if has_subscription_bought:
+        # --- CUSTOM ΠΡΟΪΟΝΤΑ & ΜΟΝΑΔΙΚΟΣ ΚΩΔΙΚΟΣ ---
+        custom_items_bought = [item for item in cart_items if item.get('is_custom')]
+        
+        if custom_items_bought:
+            order_code = generate_order_code()
+            items_text = ", ".join([i['description'] for i in custom_items_bought])
+            
+            # Ειδοποίηση Admin
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id, 
+                        f"🔔 **ΝΕΑ CUSTOM ΠΑΡΑΓΓΕΛΙΑ!** 🔔\n\n👤 Από: {user_full_name} (`{user_id}`)\n🛒 Είδη: {items_text}\n🔑 Κωδικός: `#{order_code}`",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+            
+            # Μήνυμα & Smart Link Χρήστη
+            encoded_text = urllib.parse.quote(f"Γεια σου Δήμητρα! Αγόρασα custom παραγγελία. Ο κωδικός μου είναι #{order_code} και θέλω να συνεννοηθούμε για την κατασκευή.")
+            smart_link = f"{ADMIN_LINK}?text={encoded_text}"
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="💬 Στείλε τον Κωδικό στην Admin", url=smart_link)
+            ]])
+            
+            await bot.send_message(
+                user_id,
+                f"🎉 **Ευχαριστούμε για την παραγγελία του Custom Προϊόντος!**\n\nΟ μοναδικός κωδικός σου είναι: **#{order_code}**\n\nΠάτα το παρακάτω κουμπί για να μου στείλεις απευθείας τον κωδικό και να συνεννοηθούμε για το πώς θα το φτιάξω:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            
+        elif has_subscription_bought:
             await callback.message.edit_text(
                 f"✅ **Η συνδρομή ενεργοποιήθηκε επιτυχώς!**\n\n"
                 f"🔗 Μπορείς να μπεις στην Premium ομάδα εδώ:\n{PREMIUM_GROUP_LINK}",
@@ -1233,9 +1363,9 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
             except Exception:
                 pass
         
-        # Αποστολή κανονικών αρχείων (αν υπήρχαν στο καλάθι)
+        # Αποστολή κανονικών αρχείων (αν υπήρχαν στο καλάθι και δεν είναι συνδρομές/custom)
         for item in cart_items:
-            if item['is_subscription']:
+            if item['is_subscription'] or item.get('is_custom'):
                 continue
             try:
                 file_ids = item['file_ids']
@@ -1258,7 +1388,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                             
                     await bot.send_media_group(chat_id=user_id, media=media_group)
                     
-            except Exception as e:
+            except Exception e:
                 logging.error(f"Error sending media to {user_id}: {e}")
                 
     except Exception as e:
