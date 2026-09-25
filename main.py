@@ -44,7 +44,6 @@ class UploadMedia(StatesGroup):
     waiting_for_price = State()
 
 class UploadCustom(StatesGroup):
-    waiting_for_files = State()
     waiting_for_description = State()
     waiting_for_price = State()
 
@@ -137,6 +136,15 @@ async def init_db():
                 discount INT NOT NULL,
                 bonus_tickets INT DEFAULT 0,
                 expires_at TIMESTAMP
+            );
+        """)
+        
+        await connection.execute("""
+            CREATE TABLE IF NOT EXISTS user_promo_usage (
+                telegram_id BIGINT,
+                promo_code TEXT,
+                used_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (telegram_id, promo_code)
             );
         """)
         
@@ -310,7 +318,8 @@ def main_menu():
             [KeyboardButton(text="🛍️ Κατάλογος"), KeyboardButton(text="🛒 Καλάθι")],
             [KeyboardButton(text="👛 Πορτοφόλι"), KeyboardButton(text="👤 Το Προφίλ μου")],
             [KeyboardButton(text="🎁 Κλήρωση"), KeyboardButton(text="🎟️ Εκπτωτικοί Κωδικοί")],
-            [KeyboardButton(text="👥 Κοινότητα & Επικοινωνία"), KeyboardButton(text="ℹ️ Info")]
+            [KeyboardButton(text="👥 Κοινότητα & Επικοινωνία"), KeyboardButton(text="ℹ️ Info")],
+            [KeyboardButton(text="Προβολή Υλικού 🔞")]
         ],
         resize_keyboard=True
     )
@@ -371,7 +380,7 @@ async def admin_panel(message: types.Message):
     await message.answer(
         "👑 **Κρυφό Μενού Διαχειριστή**\n\n"
         "📜 `/add_media` - Ανέβασμα κανονικού αρχείου/φωτό\n"
-        "⌨️ `/add_custom` - Ανέβασμα Custom Προϊόντος (με κωδικό παραγγελίας)\n"
+        "⌨️ `/add_custom` - Ανέβασμα Custom Προϊόντος (χωρίς φωτογραφία, με κωδικό)\n"
         "⭐ `/add_sub   ` - Προσθήκη συνδρομής ομάδας\n"
         "🗑️ `/remove_media` - Διαγραφή προσφοράς από τον κατάλογο\n"
         "🎟️ `/add_promo    `\n"
@@ -533,38 +542,10 @@ async def start_custom_upload(message: types.Message, state: FSMContext):
         
     await state.update_data(file_ids=[], media_types=[])
     await message.answer(
-        "⌨️ **Δημιουργία Custom Προϊόντος (π.χ. Keyboard)**\n\n"
-        "Στείλε μου **μία-μία** τις φωτογραφίες ή τα βίντεο του προϊόντος.\nΜόλις τελειώσεις, στείλε την εντολή: `/done_custom`",
+        "⌨️ **Δημιουργία Custom Προϊόντος**\n\n"
+        "✍️ Γράψε την **περιγραφή** που θα βλέπουν οι πελάτες στον κατάλογο:",
         parse_mode="Markdown"
     )
-    await state.set_state(UploadCustom.waiting_for_files)
-
-@dp.message(UploadCustom.waiting_for_files, F.photo | F.video)
-async def receive_custom_files(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    file_ids = data.get("file_ids", [])
-    media_types = data.get("media_types", [])
-
-    if message.photo:
-        file_ids.append(message.photo[-1].file_id)
-        media_types.append("photo")
-    elif message.video:
-        file_ids.append(message.video.file_id)
-        media_types.append("video")
-
-    await state.update_data(file_ids=file_ids, media_types=media_types)
-    await message.answer(f"✅ Προστέθηκε! (Συνολικά: {len(file_ids)} αρχεία). Στείλε κι άλλα ή γράψε `/done_custom`.")
-
-@dp.message(UploadCustom.waiting_for_files, Command("done_custom"))
-async def finish_custom_upload(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    file_ids = data.get("file_ids", [])
-
-    if not file_ids:
-        await message.answer("⚠️ Δεν έχεις στείλει κανένα αρχείο! Στείλε τουλάχιστον μία φωτογραφία ή βίντεο.")
-        return
-
-    await message.answer("✍️ Γράψε την **περιγραφή** που θα συνοδεύει το custom προϊόν:", parse_mode="Markdown")
     await state.set_state(UploadCustom.waiting_for_description)
 
 @dp.message(UploadCustom.waiting_for_description, F.text)
@@ -584,8 +565,8 @@ async def receive_custom_price(message: types.Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    file_ids = data['file_ids']
-    media_types = data['media_types']
+    file_ids = data.get('file_ids', [])
+    media_types = data.get('media_types', [])
     description = data['description']
 
     async with db_pool.acquire() as conn:
@@ -594,7 +575,7 @@ async def receive_custom_price(message: types.Message, state: FSMContext):
             file_ids, media_types, description, price
         )
         
-    await message.answer(f"✅ Το Custom Προϊόν ανέβηκε επιτυχώς στον κατάλογο!")
+    await message.answer(f"✅ Το Custom Προϊόν ανέβηκε επιτυχώς στον κατάλογο (χωρίς φωτογραφία)!")
     await state.clear()
 
 
@@ -1054,6 +1035,7 @@ async def admin_reject_crypto(callback: CallbackQuery):
 
 # --- CATALOG & CART HANDLERS ---
 @dp.message(F.text == "🛍️ Κατάλογος")
+@dp.message(F.text == "Προβολή Υλικού 🔞")
 async def show_catalog(message: types.Message):
     async with db_pool.acquire() as conn:
         items = await conn.fetch("SELECT * FROM locked_media;")
@@ -1172,25 +1154,31 @@ async def ask_promo_code(callback: CallbackQuery, state: FSMContext):
 @dp.message(CartPromo.waiting_for_promo, F.text)
 async def apply_promo_code(message: types.Message, state: FSMContext):
     code = message.text.strip().upper()
+    user_id = message.from_user.id
     
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM promo_codes WHERE expires_at <= NOW();")
         promo = await conn.fetchrow("SELECT discount, bonus_tickets FROM promo_codes WHERE code = $1;", code)
         
-    if promo:
-        discount = promo['discount']
-        tickets = promo['bonus_tickets']
-        
-        await state.update_data(promo_code=code, promo_discount=discount, promo_tickets=tickets)
-        
-        msg = f"✅ Ο κωδικός **{code}** εφαρμόστηκε επιτυχώς! Κέρδισες **-{discount}%** έκπτωση."
-        if tickets > 0:
-            msg += f" Και παίρνεις **+{tickets} εισιτήρια** δώρο για την κλήρωση!"
+        if promo:
+            already_used = await conn.fetchval("SELECT 1 FROM user_promo_usage WHERE telegram_id = $1 AND promo_code = $2;", user_id, code)
             
-        await message.answer(msg, parse_mode="Markdown")
-    else:
-        await message.answer("❌ Ο κωδικός που έβαλες είναι άκυρος ή έχει λήξει.")
-        
+            if already_used:
+                await message.answer("❌ Έχεις ήδη χρησιμοποιήσει αυτόν τον εκπτωτικό κωδικό σε προηγούμενη παραγγελία σου.")
+            else:
+                discount = promo['discount']
+                tickets = promo['bonus_tickets']
+                
+                await state.update_data(promo_code=code, promo_discount=discount, promo_tickets=tickets)
+                
+                msg = f"✅ Ο κωδικός **{code}** εφαρμόστηκε επιτυχώς! Κέρδισες **-{discount}%** έκπτωση."
+                if tickets > 0:
+                    msg += f" Και παίρνεις **+{tickets} εισιτήρια** δώρο για την κλήρωση!"
+                    
+                await message.answer(msg, parse_mode="Markdown")
+        else:
+            await message.answer("❌ Ο κωδικός που έβαλες είναι άκυρος ή έχει λήξει.")
+            
     await state.set_state(None)
     
     text, kb = await get_cart_text_and_keyboard(message.from_user.id, state)
@@ -1231,6 +1219,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
             data = await state.get_data()
             promo_discount = data.get("promo_discount", 0)
             promo_tickets = data.get("promo_tickets", 0)
+            promo_code = data.get("promo_code", None)
             
             total_price = Decimal(str(original_price))
             if promo_discount > 0:
@@ -1272,6 +1261,10 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                     "INSERT INTO purchases (telegram_id, items_summary, total_price) VALUES ($1, $2, $3);",
                     user_id, f"Αγορά καλαθιού: {items_summary}", total_price
                 )
+                
+                # Καταγραφή ότι ο χρήστης έκαψε τον κωδικό μόλις τον πλήρωσε
+                if promo_code:
+                    await conn.execute("INSERT INTO user_promo_usage (telegram_id, promo_code) VALUES ($1, $2) ON CONFLICT DO NOTHING;", user_id, promo_code)
                 
                 # --- ΔΙΑΧΕΙΡΙΣΗ ΣΥΝΔΡΟΜΩΝ ---
                 has_subscription_bought = False
@@ -1534,7 +1527,7 @@ async def show_giveaway(message: types.Message):
 
 @dp.message(F.text == "ℹ️ Info")
 async def show_info(message: types.Message):
-    await message.answer("Είμαι η Δήμητρα Σαββίδη και είμαι 22 με πολλές καύλες . Στείλτε μου μήνυμα για παραπάνω υλικό μου❤️💋🔞")
+    await message.answer("Καλώς ήρθες! Είμαι η Δήμητρα, 22 χρόνων, με βάση τη Θεσσαλονίκη. Χαίρομαι που με βρήκες. Εδώ μέσα μπορείς να ανακαλύψεις, να ξεκλειδώσεις και να αγοράσεις αυτόματα το πιο ξεχωριστό μου υλικό. Περιηγήσου στο μενού παρακάτω για να δεις τις επιλογές. Αν θες να τα πούμε, στείλε μου προσωπικό μήνυμα! Σε περιμένω... ❤️💋🔞")
 
 # --- MAIN EXECUTION ---
 async def main():
