@@ -1388,7 +1388,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                             
                     await bot.send_media_group(chat_id=user_id, media=media_group)
                     
-            except Exception e:
+            except Exception as e:
                 logging.error(f"Error sending media to {user_id}: {e}")
                 
     except Exception as e:
