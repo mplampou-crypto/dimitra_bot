@@ -1088,23 +1088,16 @@ async def show_catalog(message: types.Message):
         if item['is_subscription']:
             months_word = "Μήνας" if item['duration_months'] == 1 else "Μήνες"
             title = f"⭐ **Συνδρομή Ομάδας** ({item['duration_months']} {months_word})\n\n"
-        elif item.get('is_custom'):
-            title = f"⌨️ **Custom Παραγγελία**\n\n"
         else:
+            # Τόσο τα κανονικά αρχεία όσο και τα custom προϊόντα θα φαίνονται ομοιόμορφα ως κλειδωμένα αρχεία
             title = f"🔒 **Κλειδωμένο Αρχείο**\n\n"
             
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"🛒 Προσθήκη στο Καλάθι ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
         ])
         
-        # Αν η προσφορά έχει εικόνες/βίντεο, στείλε και το πρώτο αρχείο μαζί με το κείμενο, αλλιώς μόνο κείμενο
-        if item['file_ids'] and len(item['file_ids']) > 0:
-            if item['media_types'][0] == "photo":
-                await message.answer_photo(photo=item['file_ids'][0], caption=f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
-            else:
-                await message.answer_video(video=item['file_ids'][0], caption=f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
-        else:
-            await message.answer(f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
+        # Εμφάνιση μόνο τίτλου, περιγραφής και τιμής πριν την αγορά
+        await message.answer(f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("addcart_"))
 async def process_add_to_cart(callback: CallbackQuery):
@@ -1363,7 +1356,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                     pass
             
             # Μήνυμα & Smart Link Χρήστη
-            encoded_text = urllib.parse.quote(f"Γεια σου Δήμητρα! Αγόρασα custom παραγγελία. Ο κωδικός μου είναι #{order_code} και θέλω να συνεννοηθούμε για την κατασκευή.")
+            encoded_text = urllib.parse.quote(f"Γεια σου Δήμητρα!Ο κωδικός μου είναι #{order_code}.")
             smart_link = f"{ADMIN_LINK}?text={encoded_text}"
             
             kb = InlineKeyboardMarkup(inline_keyboard=[[
