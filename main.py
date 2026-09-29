@@ -1591,26 +1591,17 @@ async def show_profile(message: types.Message):
         logging.error(f"Error in show_profile for user {message.from_user.id}: {e}")
         await message.answer("❌ Προέκυψε κάποιο πρόβλημα κατά την εμφάνιση του προφίλ σου. Δοκίμασε ξανά αργότερα.")
 
-@dp.callback_query(F.data == "show_levels_info")
-async def show_levels_info_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    
-    async with db_pool.acquire() as conn:
-        user_points = await conn.fetchval("SELECT lifetime_points FROM users WHERE telegram_id = $1;", user_id) or 0
-        
-    bar_string, next_level_string = get_level_progress(user_points)
-
     text = (
         "📊 **Βαθμίδες (Levels) & Πόντοι**\n\n"
         "Αυτά είναι τα διαθέσιμα επίπεδα που μπορείς να ξεκλειδώσεις μαζεύοντας πόντους από τις αγορές σου:\n\n"
-        " **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
-        " **Τολμηρός💋🔞** (150 - 299 πόντοι)\n"
-        " **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι)\n"
-        " **Αφέντης💋👑🔞** (500 - 999 πόντοι)\n"
-        " **VIP🔞❤️ ** (1000+ πόντοι)\n\n"
-        f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
-        f"{bar_string}\n"
-        f"🎯 {next_level_string}"
+        "🐣 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
+        "💋 **Τολμηρός💋🔞** (150 - 299 πόντοι) ➡️ **Δώρο:** +1 bundle με τις 10 καλύτερες φώτο\n"
+        "🔥 **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι) ➡️ **Δώρο:** +30€ για αγορές στο bot\n"
+        "👑 **Αφέντης💋👑🔞** (500 - 999 πόντοι) ➡️ **Δώρο:** +1 custom video (Custom Video +10 m 🔥🔥)\n"
+        "❤️ **Ultimate VIP❤️🔞** (1000+ πόντοι) ➡️ **Δώρο:** +1 FaceTime just for free\n\n"
+        "🎁 **Όροι & Εξαργύρωση:**\n"
+        "• Μπορείς να πάρεις την ανταμοιβή σου αποκλειστικά όταν φτάσεις στο αντίστοιχο level.\n"
+        "• Μόλις το φτάσεις, στείλε προσωπικό μήνυμα στην Dimitra για να το εξαργυρώσεις!"
     )
 
     await callback.message.answer(text, parse_mode="Markdown")
