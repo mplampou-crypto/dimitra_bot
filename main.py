@@ -56,6 +56,10 @@ class CryptoTopUp(StatesGroup):
     waiting_for_amount = State()
     waiting_for_screenshot = State()
 
+class CardTopUp(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_screenshot = State()
+
 class CartPromo(StatesGroup):
     waiting_for_promo = State()
 
@@ -322,8 +326,7 @@ def main_menu():
             [KeyboardButton(text="🛍️ Κατάλογος"), KeyboardButton(text="🛒 Καλάθι")],
             [KeyboardButton(text="👛 Πορτοφόλι"), KeyboardButton(text="👤 Το Προφίλ μου")],
             [KeyboardButton(text="🎁 Κλήρωση"), KeyboardButton(text="🎟️ Εκπτωτικοί Κωδικοί")],
-            [KeyboardButton(text="🔗 Links & Επικοινωνία"), KeyboardButton(text="ℹ️ Info")],
-            [KeyboardButton(text="Προβολή Υλικού 🔞")]
+            [KeyboardButton(text="🔗 Links & Επικοινωνία"), KeyboardButton(text="ℹ️ Info")]
         ],
         resize_keyboard=True
     )
@@ -709,8 +712,9 @@ async def show_wallet(message: types.Message):
     text = f"👛 **Το Πορτοφόλι μου**\n\nΔιαθέσιμο Υπόλοιπο: **{balance}€**\n\nΕπίλεξε τρόπο κατάθεσης:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto ", callback_data="crypto_start")],
-        [InlineKeyboardButton(text="💳 Κατάθεση με PaySafe ", callback_data="paysafe_start")]
+        [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto", callback_data="crypto_start")],
+        [InlineKeyboardButton(text="💳 Αγορά Crypto με Κάρτα", callback_data="card_start")],
+        [InlineKeyboardButton(text="💶 Κατάθεση με PaySafe", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
@@ -720,6 +724,90 @@ async def cancel_deposit_flow(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("❌ Η διαδικασία κατάθεσης ακυρώθηκε.", parse_mode="Markdown")
     await callback.answer("Ακυρώθηκε")
+
+# --- CARD (MOONPAY) FLOW ---
+@dp.callback_query(F.data == "card_start")
+async def card_start(callback: CallbackQuery, state: FSMContext):
+    if await has_pending_request(callback.from_user.id):
+        await callback.message.answer_photo(
+            photo=PENDING_GRAPHIC_URL,
+            caption="⏳ **Εκκρεμεί ήδη ένα αίτημα κατάθεσης!**\n\nΠαρακαλώ περίμενε να εγκριθεί ή να απορριφθεί η προηγούμενη κατάθεσή σου.",
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+
+    await callback.message.answer("💶 **Πληκτρολόγησε το ποσό σε Ευρώ** που θέλεις να πληρώσεις με την κάρτα σου (π.χ. 50):", parse_mode="Markdown")
+    await state.set_state(CardTopUp.waiting_for_amount)
+    await callback.answer()
+
+@dp.message(CardTopUp.waiting_for_amount, F.text)
+async def process_card_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text.replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Μη έγκυρο ποσό. Σε παρακαλώ γράψε έναν αριθμό (π.χ. 50):")
+        return
+    
+    await state.update_data(amount=amount)
+    
+    moonpay_url = f"https://buy.moonpay.com?currencyCode=btc&baseCurrencyCode=eur&baseCurrencyAmount={amount}&walletAddress={BTC_WALLET}"
+    
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Πληρωμή στο MoonPay", url=moonpay_url)],
+        [InlineKeyboardButton(text="❌ Ακύρωση", callback_data="cancel_deposit")]
+    ])
+    
+    msg_text = (
+        f"💳 **Πληρωμή με Κάρτα μέσω MoonPay**\n\n"
+        f"💶 **Ποσό:** {amount}€\n\n"
+        f"1️⃣ Πάτα το παρακάτω κουμπί για να μεταφερθείς στο ασφαλές περιβάλλον.\n"
+        f"2️⃣ Το ποσό και η διεύθυνση παραλαβής μας είναι **ήδη συμπληρωμένα** αυτόματα.\n"
+        f"3️⃣ Ολοκλήρωσε την αγορά με την κάρτα σου (ή Apple/Google Pay).\n\n"
+        f"📸 **Μόλις ολοκληρωθεί η συναλλαγή, βγάλε screenshot την επιβεβαίωση και στείλ' την μου εδώ σε φωτογραφία!**"
+    )
+    await message.answer(msg_text, reply_markup=cancel_kb, parse_mode="Markdown")
+    await state.set_state(CardTopUp.waiting_for_screenshot)
+
+@dp.message(CardTopUp.waiting_for_screenshot, F.photo)
+async def process_card_screenshot(message: types.Message, state: FSMContext):
+    photo_file_id = message.photo[-1].file_id
+    data = await state.get_data()
+    amount = data.get("amount", 0.0)
+    user_id = message.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        req_id = await conn.fetchval(
+            "INSERT INTO crypto_requests (telegram_id, amount, currency, photo_file_id) VALUES ($1, $2, $3, $4) RETURNING id;",
+            user_id, amount, "MoonPay (Card)", photo_file_id
+        )
+    
+    admin_caption = (
+        f"💳 **ΝΕΟ ΑΙΤΗΜΑ ΚΑΡΤΑΣ (MoonPay)** 💳\n\n"
+        f"🆔 Αίτημα #: `{req_id}`\n"
+        f"👤 Χρήστης ID: `{user_id}`\n"
+        f"💰 Ποσό: **{amount}€**\n\n"
+        f"⚠️ _Έλεγξε το πορτοφόλι σου αν μπήκαν τα Bitcoin πριν πατήσεις Accept._"
+    )
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Accept", callback_data=f"cr_acc_{req_id}"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"cr_rej_{req_id}")
+        ]
+    ])
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_photo(chat_id=admin_id, photo=photo_file_id, caption=admin_caption, reply_markup=admin_kb, parse_mode="Markdown")
+        except Exception:
+            pass
+            
+    await message.answer("✅ Το screenshot στάλθηκε επιτυχώς! Μόλις επιβεβαιώσουμε τη συναλλαγή, τα χρήματα θα μπουν στο πορτοφόλι σου.")
+    await state.clear()
+
 
 # --- PAYSAFE FLOW ---
 @dp.callback_query(F.data == "paysafe_start")
@@ -733,7 +821,6 @@ async def paysafe_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    # Δημιουργία κουμπιών με τα έτοιμα ποσά
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="5€", callback_data="ps_amt_5"),
@@ -750,14 +837,12 @@ async def paysafe_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(PaySafeTopUp.waiting_for_amount)
     await callback.answer()
 
-# Διαβάζει το πάτημα του κουμπιού αντί για πληκτρολόγηση κειμένου
 @dp.callback_query(PaySafeTopUp.waiting_for_amount, F.data.startswith("ps_amt_"))
 async def process_paysafe_amount_callback(callback: CallbackQuery, state: FSMContext):
     amount = float(callback.data.split("_")[2])
     
     await state.update_data(amount=amount)
     
-    # Προσθήκη κουμπιού ακύρωσης
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Ακύρωση Κατάθεσης", callback_data="cancel_deposit")]
     ])
@@ -771,7 +856,6 @@ async def process_paysafe_amount_callback(callback: CallbackQuery, state: FSMCon
     await state.set_state(PaySafeTopUp.waiting_for_code)
     await callback.answer()
 
-# Αν ο χρήστης προσπαθήσει να γράψει νούμερο αντί να πατήσει τα κουμπιά
 @dp.message(PaySafeTopUp.waiting_for_amount)
 async def process_paysafe_amount_invalid(message: types.Message):
     await message.answer("❌ Παρακαλώ επίλεξε ένα από τα έτοιμα ποσά (5, 10, 25, 50, 100) πατώντας τα αντίστοιχα κουμπιά πιο πάνω.")
@@ -950,7 +1034,6 @@ async def process_crypto_amount(message: types.Message, state: FSMContext):
     crypto_text = f"{crypto_amt:.6f}" if crypto_amt > 0 else "Αγνωστο (API Error)"
     usdt_text = f"{usdt_amt:.2f}" if usdt_amt > 0 else "Αγνωστο (API Error)"
     
-    # Προσθήκη κουμπιού ακύρωσης
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Ακύρωση Κατάθεσης", callback_data="cancel_deposit")]
     ])
@@ -1075,7 +1158,6 @@ async def admin_reject_crypto(callback: CallbackQuery):
 
 # --- CATALOG & CART HANDLERS ---
 @dp.message(F.text == "🛍️ Κατάλογος")
-@dp.message(F.text == "Προβολή Υλικού 🔞")
 async def show_catalog(message: types.Message):
     async with db_pool.acquire() as conn:
         items = await conn.fetch("SELECT * FROM locked_media;")
@@ -1089,14 +1171,12 @@ async def show_catalog(message: types.Message):
             months_word = "Μήνας" if item['duration_months'] == 1 else "Μήνες"
             title = f"⭐ **Συνδρομή Ομάδας** ({item['duration_months']} {months_word})\n\n"
         else:
-            # Τόσο τα κανονικά αρχεία όσο και τα custom προϊόντα θα φαίνονται ομοιόμορφα ως κλειδωμένα αρχεία
             title = f"🔒 **Κλειδωμένο Αρχείο**\n\n"
             
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"🛒 Προσθήκη στο Καλάθι ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
         ])
         
-        # Εμφάνιση μόνο τίτλου, περιγραφής και τιμής πριν την αγορά
         await message.answer(f"{title}📝 {item['description']}", reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("addcart_"))
@@ -1295,11 +1375,9 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                     user_id, f"Αγορά καλαθιού: {items_summary}", total_price
                 )
                 
-                # Καταγραφή ότι ο χρήστης έκαψε τον κωδικό μόλις τον πλήρωσε
                 if promo_code:
                     await conn.execute("INSERT INTO user_promo_usage (telegram_id, promo_code) VALUES ($1, $2) ON CONFLICT DO NOTHING;", user_id, promo_code)
                 
-                # --- ΔΙΑΧΕΙΡΙΣΗ ΣΥΝΔΡΟΜΩΝ ---
                 has_subscription_bought = False
                 total_months_added = 0
                 
@@ -1337,14 +1415,12 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 
         await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
         
-        # --- CUSTOM ΠΡΟΪΟΝΤΑ & ΜΟΝΑΔΙΚΟΣ ΚΩΔΙΚΟΣ ---
         custom_items_bought = [item for item in cart_items if item.get('is_custom')]
         
         if custom_items_bought:
             order_code = generate_order_code()
             items_text = ", ".join([i['description'] for i in custom_items_bought])
             
-            # Ειδοποίηση Admin
             for admin_id in ADMIN_IDS:
                 try:
                     await bot.send_message(
@@ -1355,7 +1431,6 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 except Exception:
                     pass
             
-            # Μήνυμα & Smart Link Χρήστη
             encoded_text = urllib.parse.quote(f"Γεια σου Δήμητρα! Ο κωδικός μου είναι #{order_code}.")
             smart_link = f"{ADMIN_LINK}?text={encoded_text}"
             
@@ -1389,7 +1464,6 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
             except Exception:
                 pass
         
-        # Αποστολή κανονικών αρχείων (αν υπήρχαν στο καλάθι και δεν είναι συνδρομές/custom)
         for item in cart_items:
             if item['is_subscription'] or item.get('is_custom'):
                 continue
@@ -1560,7 +1634,6 @@ async def show_giveaway(message: types.Message):
 
 @dp.message(F.text == "ℹ️ Info")
 async def show_info(message: types.Message):
-    # Προσθήκη του Inline Keyboard κάτω από το κείμενο του Info
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Προβολή Υλικού 🔞", callback_data="open_catalog")]
     ])
@@ -1569,11 +1642,9 @@ async def show_info(message: types.Message):
         reply_markup=kb
     )
 
-# Συνάρτηση Callback για το κουμπί του καταλόγου
 @dp.callback_query(F.data == "open_catalog")
 async def inline_show_catalog(callback: CallbackQuery):
     await callback.answer()
-    # Καλεί απευθείας την υπάρχουσα συνάρτηση του καταλόγου περνώντας το callback.message
     await show_catalog(callback.message)
 
 # --- MAIN EXECUTION ---
