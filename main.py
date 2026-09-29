@@ -190,17 +190,31 @@ async def init_db():
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS is_custom BOOLEAN DEFAULT FALSE;")
 
 # --- HELPER FUNCTIONS ---
-def get_user_level(points: int) -> str:
-    if points >= 1000:
-        return "Ultimate VIP❤️🔞"
-    elif points >= 500:
-        return "Αφέντης💋👑🔞"
-    elif points >= 300:
-        return "Ορεξάτος👀🔥🔞"
-    elif points >= 150:
-        return "Τολμηρός💋🔞"
-    else:
-        return "Πρωτάρης🐣🔞"
+@dp.callback_query(F.data == "show_levels_info")
+async def show_levels_info_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        user_points = await conn.fetchval("SELECT lifetime_points FROM users WHERE telegram_id = $1;", user_id) or 0
+        
+    bar_string, next_level_string = get_level_progress(user_points)
+
+    text = (
+        "📊 **Βαθμίδες (Levels) & Δώρα Επιβράβευσης**\n\n"
+        "Ανέβασε επίπεδο μαζεύοντας πόντους από τις αγορές σου και κέρδισε μοναδικά δώρα!\n\n"
+        "🐣 **Πρωτάρης** (0 - 149 πόντοι)\n"
+        "💋 **Τολμηρός** (150 - 299 πόντοι) ➡️ *Δώρο: +1 bundle με τις 10 καλύτερες φώτο*\n"
+        "🔥 **Ορεξάτος** (300 - 499 πόντοι) ➡️ *Δώρο: +30€ για αγορές στο bot*\n"
+        "👑 **Αφέντης** (500 - 999 πόντοι) ➡️ *Δώρο: +1 custom video*\n"
+        "❤️ **Ultimate VIP** (1000+ πόντοι) ➡️ *Δώρο: +1 FaceTime just for free*\n\n"
+        "🎁 *Σημείωση: Μπορείς να πάρεις τα δώρα σου μόλις φτάσεις το αντίστοιχο level, στέλνοντας μήνυμα στην Dimitra για να τα εξαργυρώσεις!*\n\n"
+        f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
+        f"{bar_string}\n"
+        f"🎯 {next_level_string}"
+    )
+
+    await callback.message.answer(text, parse_mode="Markdown")
+    await callback.answer()
 
 def get_level_progress(points: int):
     if points < 150:
@@ -713,7 +727,7 @@ async def show_wallet(message: types.Message):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚡ Κατάθεση με Crypto", callback_data="crypto_start")],
-        [InlineKeyboardButton(text="💳 Αγορά Crypto με Κάρτα", callback_data="card_start")],
+        [InlineKeyboardButton(text="💳 Αγορά με Κάρτα", callback_data="card_start")],
         [InlineKeyboardButton(text="💶 Κατάθεση με PaySafe", callback_data="paysafe_start")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
@@ -764,7 +778,7 @@ async def process_card_amount(message: types.Message, state: FSMContext):
         f"💳 **Πληρωμή με Κάρτα μέσω MoonPay**\n\n"
         f"💶 **Ποσό:** {amount}€\n\n"
         f"1️⃣ Πάτα το παρακάτω κουμπί για να μεταφερθείς στο ασφαλές περιβάλλον.\n"
-        f"2️⃣ Το ποσό και η διεύθυνση παραλαβής μας είναι **ήδη συμπληρωμένα** αυτόματα.\n"
+        f"2️⃣ Το μόνο που έχεις να κάνεις είναι μια εγγραφή και μια ταυτοποίηση την πρωτή φορά>\n"
         f"3️⃣ Ολοκλήρωσε την αγορά με την κάρτα σου (ή Apple/Google Pay).\n\n"
         f"📸 **Μόλις ολοκληρωθεί η συναλλαγή, βγάλε screenshot την επιβεβαίωση και στείλ' την μου εδώ σε φωτογραφία!**"
     )
