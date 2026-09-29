@@ -190,31 +190,17 @@ async def init_db():
         await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS is_custom BOOLEAN DEFAULT FALSE;")
 
 # --- HELPER FUNCTIONS ---
-@dp.callback_query(F.data == "show_levels_info")
-async def show_levels_info_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    
-    async with db_pool.acquire() as conn:
-        user_points = await conn.fetchval("SELECT lifetime_points FROM users WHERE telegram_id = $1;", user_id) or 0
-        
-    bar_string, next_level_string = get_level_progress(user_points)
-
-    text = (
-        "📊 **Βαθμίδες (Levels) & Δώρα Επιβράβευσης**\n\n"
-        "Ανέβασε επίπεδο μαζεύοντας πόντους από τις αγορές σου και κέρδισε μοναδικά δώρα!\n\n"
-        "🐣 **Πρωτάρης** (0 - 149 πόντοι)\n"
-        "💋 **Τολμηρός** (150 - 299 πόντοι) ➡️ *Δώρο: +1 bundle με τις 10 καλύτερες φώτο*\n"
-        "🔥 **Ορεξάτος** (300 - 499 πόντοι) ➡️ *Δώρο: +30€ για αγορές στο bot*\n"
-        "👑 **Αφέντης** (500 - 999 πόντοι) ➡️ *Δώρο: +1 custom video*\n"
-        "❤️ **Ultimate VIP** (1000+ πόντοι) ➡️ *Δώρο: +1 FaceTime just for free*\n\n"
-        "🎁 *Σημείωση: Μπορείς να πάρεις τα δώρα σου μόλις φτάσεις το αντίστοιχο level, στέλνοντας μήνυμα στην Dimitra για να τα εξαργυρώσεις!*\n\n"
-        f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
-        f"{bar_string}\n"
-        f"🎯 {next_level_string}"
-    )
-
-    await callback.message.answer(text, parse_mode="Markdown")
-    await callback.answer()
+def get_user_level(points: int) -> str:
+    if points >= 1000:
+        return "Ultimate VIP❤️🔞"
+    elif points >= 500:
+        return "Αφέντης💋👑🔞"
+    elif points >= 300:
+        return "Ορεξάτος👀🔥🔞"
+    elif points >= 150:
+        return "Τολμηρός💋🔞"
+    else:
+        return "Πρωτάρης🐣🔞"
 
 def get_level_progress(points: int):
     if points < 150:
@@ -404,7 +390,7 @@ async def admin_panel(message: types.Message):
         "⌨️ `/add_custom` - Ανέβασμα Custom Προϊόντος (χωρίς φωτογραφία, με κωδικό)\n"
         "⭐ `/add_sub   ` - Προσθήκη συνδρομής ομάδας\n"
         "🗑️ `/remove_media` - Διαγραφή προσφοράς από τον κατάλογο\n"
-        "🎟️ `/add_promo    `\n"
+        "🎟️️ `/add_promo    `\n"
         "❌ `/del_promo `\n"
         "💸 `/give_money  `\n"
         "⏳ `/set_giveaway `",
@@ -531,7 +517,7 @@ async def admin_give_money(message: types.Message):
 
     args = message.text.split()
     if len(args) != 3:
-        await message.answer("⚠️ Χρήση: `/give_money  `", parse_mode="Markdown")
+        await message.answer("⚠️️ Χρήση: `/give_money  `", parse_mode="Markdown")
         return
 
     try:
@@ -1122,7 +1108,7 @@ async def admin_accept_crypto(callback: CallbackQuery):
             return
             
         if row['status'] != 'pending':
-            await callback.answer("⚠️ Αυτό το αίτημα έχει ΉΔΗ ολοκληρωθεί (από εσένα ή τον άλλο admin)!", show_alert=True)
+            await callback.answer("⚠️️ Αυτό το αίτημα έχει ΉΔΗ ολοκληρωθεί (από εσένα ή τον άλλο admin)!", show_alert=True)
             await callback.message.edit_reply_markup(reply_markup=None)
             return
             
@@ -1171,7 +1157,7 @@ async def admin_reject_crypto(callback: CallbackQuery):
 
 
 # --- CATALOG & CART HANDLERS ---
-@dp.message(F.text == "🛍️ Κατάλογος")
+@dp.message(F.text == "🛍️️ Κατάλογος")
 async def show_catalog(message: types.Message):
     async with db_pool.acquire() as conn:
         items = await conn.fetch("SELECT * FROM locked_media;")
@@ -1591,17 +1577,29 @@ async def show_profile(message: types.Message):
         logging.error(f"Error in show_profile for user {message.from_user.id}: {e}")
         await message.answer("❌ Προέκυψε κάποιο πρόβλημα κατά την εμφάνιση του προφίλ σου. Δοκίμασε ξανά αργότερα.")
 
+@dp.callback_query(F.data == "show_levels_info")
+async def show_levels_info_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        user_points = await conn.fetchval("SELECT lifetime_points FROM users WHERE telegram_id = $1;", user_id) or 0
+        
+    bar_string, next_level_string = get_level_progress(user_points)
+
     text = (
-        "📊 **Βαθμίδες (Levels) & Πόντοι**\n\n"
-        "Αυτά είναι τα διαθέσιμα επίπεδα που μπορείς να ξεκλειδώσεις μαζεύοντας πόντους από τις αγορές σου:\n\n"
+        "📊 **Βαθμίδες (Levels) & Δώρα Επιβράβευσης**\n\n"
+        "Ανέβασε επίπεδο μαζεύοντας πόντους από τις αγορές σου:\n\n"
         "🐣 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
         "💋 **Τολμηρός💋🔞** (150 - 299 πόντοι) ➡️ **Δώρο:** +1 bundle με τις 10 καλύτερες φώτο\n"
         "🔥 **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι) ➡️ **Δώρο:** +30€ για αγορές στο bot\n"
         "👑 **Αφέντης💋👑🔞** (500 - 999 πόντοι) ➡️ **Δώρο:** +1 custom video (Custom Video +10 m 🔥🔥)\n"
-        "❤️ **Ultimate VIP❤️🔞** (1000+ πόντοι) ➡️ **Δώρο:** +1 FaceTime just for free\n\n"
+        "❤️ **Ultimate VIP❤️️🔞** (1000+ πόντοι) ➡️ **Δώρο:** +1 FaceTime just for free\n\n"
         "🎁 **Όροι & Εξαργύρωση:**\n"
         "• Μπορείς να πάρεις την ανταμοιβή σου αποκλειστικά όταν φτάσεις στο αντίστοιχο level.\n"
-        "• Μόλις το φτάσεις, στείλε προσωπικό μήνυμα στην Dimitra για να το εξαργυρώσεις!"
+        "• Μόλις το φτάσεις, στείλε προσωπικό μήνυμα στην Dimitra για να το εξαργυρώσεις!\n\n"
+        f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
+        f"{bar_string}\n"
+        f"🎯 {next_level_string}"
     )
 
     await callback.message.answer(text, parse_mode="Markdown")
@@ -1642,10 +1640,23 @@ async def show_info(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Προβολή Υλικού 🔞", callback_data="open_catalog")]
     ])
-    await message.answer(
-        "Καλώς ήρθες! Είμαι η Δήμητρα, 22 χρόνων, με βάση τη Θεσσαλονίκη. Χαίρομαι που με βρήκες. Εδώ μέσα μπορείς να ανακαλύψεις, να ξεκλειδώσεις και να αγοράσεις αυτόματα το πιο ξεχωριστό μου υλικό. Περιηγήσου στο μενού παρακάτω για να δεις τις επιλογές. Αν θες να τα πούμε, στείλε μου προσωπικό μήνυμα! Σε περιμένω... ❤️💋🔞",
-        reply_markup=kb
+    
+    info_text = (
+        "Καλώς ήρθες! Είμαι η Δήμητρα, 22 χρόνων, με βάση τη Θεσσαλονίκη. Χαίρομαι που με βρήκες. Εδώ μέσα μπορείς να ανακαλύψεις, να ξεκλειδώσεις και να αγοράσεις αυτόματα το πιο ξεχωριστό μου υλικό. Περιηγήσου στο μενού παρακάτω για να δεις τις επιλογές. Αν θες να τα πούμε, στείλε μου προσωπικό μήνυμα! Σε περιμένω... ❤️💋🔞\n\n"
+        "─── ⋆⋅☆⋅⋆ ───\n\n"
+        "📊 **Βαθμίδες (Levels) & Στάδια**\n\n"
+        "Ανέβασε επίπεδο μαζεύοντας πόντους από τις αγορές σου:\n\n"
+        "🐣 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
+        "💋 **Τολμηρός💋🔞** (150 - 299 πόντοι) ➡️ **Δώρο:** +1 bundle με τις 10 καλύτερες φώτο\n"
+        "🔥 **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι) ➡️ **Δώρο:** +30€ για αγορές στο bot\n"
+        "👑 **Αφέντης💋👑🔞** (500 - 999 πόντοι) ➡️ **Δώρο:** +1 custom video (Custom Video +10 m 🔥🔥)\n"
+        "❤️ **Ultimate VIP❤️🔞** (1000+ πόντοι) ➡️ **Δώρο:** +1 FaceTime just for free\n\n"
+        "🎁 **Όροι & Εξαργύρωση:**\n"
+        "• Μπορείς να πάρεις την ανταμοιβή σου αποκλειστικά όταν φτάσεις στο αντίστοιχο level.\n"
+        "• Μόλις το φτάσεις, στείλε προσωπικό μήνυμα στην Dimitra για να το εξαργυρώσεις!"
     )
+    
+    await message.answer(info_text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "open_catalog")
 async def inline_show_catalog(callback: CallbackQuery):
