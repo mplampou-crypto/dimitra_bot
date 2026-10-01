@@ -323,10 +323,10 @@ async def get_cart_text_and_keyboard(user_id: int, state: FSMContext):
 def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🛍️ Κατάλογος"), KeyboardButton(text="🛒 Καλάθι")],
-            [KeyboardButton(text="👛 Πορτοφόλι"), KeyboardButton(text="👤 Το Προφίλ μου")],
-            [KeyboardButton(text="🎁 Κλήρωση"), KeyboardButton(text="🎟️ Εκπτωτικοί Κωδικοί")],
-            [KeyboardButton(text="🔗 Links & Επικοινωνία"), KeyboardButton(text="ℹ️ Info")]
+            [KeyboardButton(text="🛍️ Catalog"), KeyboardButton(text="🛒 Cart")],
+            [KeyboardButton(text="👛 Wallet"), KeyboardButton(text="👤 My Profile")],
+            [KeyboardButton(text="🎁 Giveaway"), KeyboardButton(text="🎟️ Promo Codes")],
+            [KeyboardButton(text="🔗 Links & Support"), KeyboardButton(text="ℹ️ Info")]
         ],
         resize_keyboard=True
     )
@@ -704,7 +704,7 @@ async def process_admin_delete(callback: CallbackQuery):
 
 
 # --- WALLET & TOP-UP HANDLERS ---
-@dp.message(F.text == "👛 Πορτοφόλι")
+@dp.message(F.text == "👛 Wallet")
 async def show_wallet(message: types.Message):
     async with db_pool.acquire() as conn:
         balance = await conn.fetchval("SELECT balance FROM users WHERE telegram_id = $1;", message.from_user.id)
@@ -1157,7 +1157,7 @@ async def admin_reject_crypto(callback: CallbackQuery):
 
 
 # --- CATALOG & CART HANDLERS ---
-@dp.message(F.text == "🛍️ Κατάλογος")
+@dp.message(F.text == "🛍️ Catalog")
 async def show_catalog(message: types.Message):
     async with db_pool.acquire() as conn:
         items = await conn.fetch("SELECT * FROM locked_media;")
@@ -1194,7 +1194,7 @@ async def process_add_to_cart(callback: CallbackQuery):
     await callback.answer("✅ Προστέθηκε στο καλάθι!", show_alert=False)
 
 
-@dp.message(F.text == "🛒 Καλάθι")
+@dp.message(F.text == "🛒 Cart")
 async def show_cart(message: types.Message, state: FSMContext):
     text, kb = await get_cart_text_and_keyboard(message.from_user.id, state)
     if kb:
@@ -1231,7 +1231,7 @@ async def process_clear_cart(callback: CallbackQuery, state: FSMContext):
 
 
 # --- PROMO CODE HANDLERS ---
-@dp.message(F.text == "🎟️ Εκπτωτικοί Κωδικοί")
+@dp.message(F.text == "🎟️ Promo Codes")
 async def show_promo_codes(message: types.Message):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM promo_codes WHERE expires_at <= NOW();")
@@ -1260,7 +1260,7 @@ async def show_promo_codes(message: types.Message):
 
 @dp.callback_query(F.data == "ask_promo")
 async def ask_promo_code(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("🎟️️ Στείλε μου στο chat τον κωδικό έκπτωσης που διαθέτεις:")
+    await callback.message.answer("🎟 Στείλε μου στο chat τον κωδικό έκπτωσης που διαθέτεις:")
     await state.set_state(CartPromo.waiting_for_promo)
     await callback.answer()
 
@@ -1519,7 +1519,7 @@ async def cmd_start(message: types.Message):
         reply_markup=main_menu()
     )
 
-@dp.message(F.text == "🔗 Links & Επικοινωνία")
+@dp.message(F.text == "🔗 Links & Support")
 async def show_support(message: types.Message):
     await message.answer(
         "Μπορείς να συνδεθείς στην κοινότητά μας ή να επικοινωνήσεις απευθείας μαζί μας παρακάτω:",
@@ -1527,7 +1527,7 @@ async def show_support(message: types.Message):
     )
 
 # --- PROFILE HANDLERS ---
-@dp.message(F.text == "👤 Το Προφίλ μου")
+@dp.message(F.text == "👤 My Profile")
 async def show_profile(message: types.Message):
     try:
         user_id = message.from_user.id
@@ -1599,15 +1599,10 @@ async def show_levels_info_callback(callback: CallbackQuery):
         "🏆 **Βαθμίδες (Levels) & Στάδια**\n\n"
         "Ανέβασε επίπεδο μαζεύοντας πόντους από τις αγορές σου:\n\n"
         "🐣 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
-        
         "💋 **Τολμηρός💋🔞** (150 - 299 πόντοι) ➡️ **Δώρο:** +1 bundle 10 hot photos +5€ bot token \n"
-        
         "🔥 **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι) ➡️ **Δώρο:** +30€ bot token \n"
-        
         "👑 **Αφέντης💋👑🔞** (500 - 999 πόντοι) ➡️ **Δώρο:** +1 custom video (Custom Video +10 m 🔥🔥) +5 hot video🔞 +10 bot token \n"
-        
         "❤️ **Ultimate VIP❤️🔞** (1000+ πόντοι) ➡️ **Δώρο:** +1 FaceTime (+30 m) +3 hottest videos🔞 +10 nudes photos \n\n"
-        
         "🎁 **Όροι & Εξαργύρωση:**\n"
         "• Μπορείς να πάρεις την ανταμοιβή σου αποκλειστικά όταν φτάσεις στο αντίστοιχο level.\n"
         "• Μόλις το φτάσεις, στείλε προσωπικό μήνυμα στην Dimitra για να το εξαργυρώσεις!\n\n"
@@ -1620,7 +1615,7 @@ async def show_levels_info_callback(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.message(F.text == "🎁 Κλήρωση")
+@dp.message(F.text == "🎁 Giveaway")
 async def show_giveaway(message: types.Message):
     async with db_pool.acquire() as conn:
         settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
