@@ -1260,7 +1260,7 @@ async def show_promo_codes(message: types.Message):
 
 @dp.callback_query(F.data == "ask_promo")
 async def ask_promo_code(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("🎟️ Στείλε μου στο chat τον κωδικό έκπτωσης που διαθέτεις:")
+    await callback.message.answer("🎟️️ Στείλε μου στο chat τον κωδικό έκπτωσης που διαθέτεις:")
     await state.set_state(CartPromo.waiting_for_promo)
     await callback.answer()
 
@@ -1355,8 +1355,15 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
             old_points = user['lifetime_points']
             new_total_points = old_points + points_earned
             
-            tickets_to_add = (new_total_points // 50) - (old_points // 50)
-            tickets_to_add += promo_tickets
+            # Έλεγχος αν η κλήρωση είναι ενεργή
+            now = datetime.datetime.now()
+            giveaway = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
+            
+            if giveaway and giveaway['ends_at'] > now:
+                tickets_to_add = (new_total_points // 50) - (old_points // 50)
+                tickets_to_add += promo_tickets
+            else:
+                tickets_to_add = 0
             
             items_summary = ", ".join([item['description'] for item in cart_items])
 
@@ -1392,7 +1399,6 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                             user_id
                         )
                         
-                        now = datetime.datetime.now()
                         if existing_sub and existing_sub['expires_at'] > now:
                             new_expiry = existing_sub['expires_at'] + datetime.timedelta(days=30 * months)
                             await conn.execute(
@@ -1414,6 +1420,7 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
         await state.update_data(promo_code=None, promo_discount=0, promo_tickets=0)
                 
         await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
+        await callback.message.edit_text("✅ **Η παραγγελία ολοκληρώθηκε με επιτυχία!**", parse_mode="Markdown")
         
         custom_items_bought = [item for item in cart_items if item.get('is_custom')]
         
@@ -1445,14 +1452,16 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 parse_mode="Markdown"
             )
             
-        elif has_subscription_bought:
-            await callback.message.edit_text(
-                f"✅ **Η συνδρομή ενεργοποιήθηκε επιτυχώς!**\n\n"
-                f"🔗 Μπορείς να μπεις στην Premium ομάδα εδώ:\n{PREMIUM_GROUP_LINK}",
+        if has_subscription_bought:
+            sub_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="💎 Είσοδος στο VIP Group", url=PREMIUM_GROUP_LINK)
+            ]])
+            await bot.send_message(
+                user_id,
+                "✅ **Η συνδρομή σου ενεργοποιήθηκε επιτυχώς!**\n\nΠάτα το παρακάτω κουμπί για να μπεις αμέσως στην Premium ομάδα:",
+                reply_markup=sub_kb,
                 parse_mode="Markdown"
             )
-        else:
-            await callback.message.edit_text("✅ Η αγορά ολοκληρώθηκε με επιτυχία! Σας αποστέλλονται τα αρχεία...")
 
         if tickets_to_add > 0:
             try:
@@ -1590,10 +1599,15 @@ async def show_levels_info_callback(callback: CallbackQuery):
         "🏆 **Βαθμίδες (Levels) & Στάδια**\n\n"
         "Ανέβασε επίπεδο μαζεύοντας πόντους από τις αγορές σου:\n\n"
         "🐣 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
+        
         "💋 **Τολμηρός💋🔞** (150 - 299 πόντοι) ➡️ **Δώρο:** +1 bundle 10 hot photos +5€ bot token \n"
+        
         "🔥 **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι) ➡️ **Δώρο:** +30€ bot token \n"
+        
         "👑 **Αφέντης💋👑🔞** (500 - 999 πόντοι) ➡️ **Δώρο:** +1 custom video (Custom Video +10 m 🔥🔥) +5 hot video🔞 +10 bot token \n"
+        
         "❤️ **Ultimate VIP❤️🔞** (1000+ πόντοι) ➡️ **Δώρο:** +1 FaceTime (+30 m) +3 hottest videos🔞 +10 nudes photos \n\n"
+        
         "🎁 **Όροι & Εξαργύρωση:**\n"
         "• Μπορείς να πάρεις την ανταμοιβή σου αποκλειστικά όταν φτάσεις στο αντίστοιχο level.\n"
         "• Μόλις το φτάσεις, στείλε προσωπικό μήνυμα στην Dimitra για να το εξαργυρώσεις!\n\n"
