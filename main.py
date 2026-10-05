@@ -38,6 +38,10 @@ dp = Dispatcher()
 db_pool = None
 
 # --- FSM STATES ---
+class UserOnboarding(StatesGroup):
+    waiting_for_ig = State()
+    waiting_for_tiktok = State()
+
 class UploadMedia(StatesGroup):
     waiting_for_files = State()
     waiting_for_description = State()
@@ -75,6 +79,8 @@ async def init_db():
                 lifetime_points INT DEFAULT 0,
                 giveaway_tickets INT DEFAULT 0,
                 total_spent NUMERIC(10, 2) DEFAULT 0.00,
+                instagram TEXT,
+                tiktok TEXT,
                 created_at TIMESTAMP DEFAULT NOW()
             );
         """)
@@ -178,6 +184,8 @@ async def init_db():
         await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS lifetime_points INT DEFAULT 0;")
         await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS giveaway_tickets INT DEFAULT 0;")
         await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_spent NUMERIC(10, 2) DEFAULT 0.00;")
+        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS instagram TEXT;")
+        await connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tiktok TEXT;")
         
         await connection.execute("ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS bonus_tickets INT DEFAULT 0;")
         await connection.execute("ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;")
@@ -192,7 +200,7 @@ async def init_db():
 # --- HELPER FUNCTIONS ---
 def get_user_level(points: int) -> str:
     if points >= 1000:
-        return "Ultimate VIP❤️🔞"
+        return "Ultimate VIP❤️️🔞"
     elif points >= 500:
         return "Αφέντης💋👑🔞"
     elif points >= 300:
@@ -233,7 +241,6 @@ async def get_conversion(amount_eur: float, crypto_symbol: str):
             usdt_amount = 0.0
             crypto_amount = 0.0
             
-            # 1. Βρίσκουμε την ισοτιμία EUR σε USDT από τη Binance
             async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=EURUSDT") as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -242,7 +249,6 @@ async def get_conversion(amount_eur: float, crypto_symbol: str):
                 else:
                     logging.error(f"Binance EURUSDT error: {resp.status}")
 
-            # 2. Βρίσκουμε την τιμή του Crypto σε USDT (π.χ. BTCUSDT, ETHUSDT)
             symbol = f"{crypto_symbol}USDT"
             async with session.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}") as resp:
                 if resp.status == 200:
@@ -378,6 +384,62 @@ async def check_subscriptions_loop():
             
         await asyncio.sleep(60)
 
+
+# --- USER ONBOARDING (INSTA & TIKTOK) ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (telegram_id) VALUES ($1) ON CONFLICT (telegram_id) DO NOTHING;",
+            user_id
+        )
+        user = await conn.fetchrow("SELECT instagram, tiktok FROM users WHERE telegram_id = $1;", user_id)
+        
+    if not user['instagram'] or not user['tiktok']:
+        await message.answer(
+            "Καλωσόρισες! 💋\n\n"
+            "Αυτά τα στοιχεία τα χρειάζομαι για την καλύτερη επικοινωνία μας, αλλά και για να μπορώ να σου δώσω τις ανταμοιβές της κλήρωσης αν κερδίσεις! 🎁\n\n"
+            "👉 **Γράψε μου το username σου στο Instagram (π.χ. @onoma):**",
+            parse_mode="Markdown",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        await state.set_state(UserOnboarding.waiting_for_ig)
+    else:
+        await message.answer(
+            f"Καλωσόρισες ξανά, {message.from_user.first_name}!\nΧρησιμοποίησε το μενού παρακάτω για να πλοηγηθείς.",
+            reply_markup=main_menu()
+        )
+
+@dp.message(UserOnboarding.waiting_for_ig, F.text)
+async def process_ig(message: types.Message, state: FSMContext):
+    ig_username = message.text.strip()
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET instagram = $1 WHERE telegram_id = $2;", ig_username, message.from_user.id)
+    
+    await message.answer(
+        "Τέλεια! 📸\n\n"
+        "👉 **Τώρα γράψε μου το username σου στο TikTok** (ή γράψε 'Κανένα' αν δεν έχεις):", 
+        parse_mode="Markdown"
+    )
+    await state.set_state(UserOnboarding.waiting_for_tiktok)
+
+@dp.message(UserOnboarding.waiting_for_tiktok, F.text)
+async def process_tiktok(message: types.Message, state: FSMContext):
+    tt_username = message.text.strip()
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET tiktok = $1 WHERE telegram_id = $2;", tt_username, message.from_user.id)
+    
+    await state.clear()
+    await message.answer(
+        f"Σε ευχαριστώ πολύ, {message.from_user.first_name}! Όλα έτοιμα. 💋\n\n"
+        "Χρησιμοποίησε το μενού παρακάτω για να ανακαλύψεις τον κατάλογο:",
+        reply_markup=main_menu()
+    )
+
+
 # --- ADMIN HANDLERS ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -393,9 +455,47 @@ async def admin_panel(message: types.Message):
         "🎟️ `/add_promo    `\n"
         "❌ `/del_promo `\n"
         "💸 `/give_money  `\n"
-        "⏳ `/set_giveaway `",
+        "⏳ `/set_giveaway `\n"
+        "🔍 `/search ` - Δες τα socials και τα στοιχεία του χρήστη",
         parse_mode="Markdown"
     )
+
+@dp.message(Command("search"))
+async def admin_search_user(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+        
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("⚠️ Χρήση: `/search `\nΠαράδειγμα: `/search 123456789`", parse_mode="Markdown")
+        return
+        
+    try:
+        target_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ Το ID πρέπει να είναι νούμερο.")
+        return
+        
+    async with db_pool.acquire() as conn:
+        user = await conn.fetchrow("SELECT instagram, tiktok, balance, lifetime_points, total_spent FROM users WHERE telegram_id = $1;", target_id)
+        
+    if not user:
+        await message.answer("❌ Δεν βρέθηκε χρήστης με αυτό το ID στη βάση δεδομένων.")
+        return
+        
+    ig = user['instagram'] or "Δεν έχει δηλωθεί"
+    tt = user['tiktok'] or "Δεν έχει δηλωθεί"
+    
+    text = (
+        f"🔍 **Στοιχεία Χρήστη: `{target_id}`**\n\n"
+        f"📸 **Instagram:** {ig}\n"
+        f"🎵 **TikTok:** {tt}\n\n"
+        f"💰 **Υπόλοιπο Πορτοφολιού:** {user['balance']}€\n"
+        f"🛍️ **Συνολικά Χρήματα που έχει ξοδέψει:** {user['total_spent']}€\n"
+        f"⭐ **Συνολικοί Πόντοι Level:** {user['lifetime_points']}"
+    )
+    
+    await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("add_sub"))
 async def admin_add_subscription(message: types.Message):
@@ -550,7 +650,7 @@ async def start_custom_upload(message: types.Message, state: FSMContext):
     await state.update_data(file_ids=[], media_types=[])
     await message.answer(
         "⌨️ **Δημιουργία Custom Προϊόντος**\n\n"
-        "✍️ Γράψε την **περιγραφή** που θα βλέπουν οι πελάτες στον κατάλογο:",
+        "✍️️ Γράψε την **περιγραφή** που θα βλέπουν οι πελάτες στον κατάλογο:",
         parse_mode="Markdown"
     )
     await state.set_state(UploadCustom.waiting_for_description)
@@ -1383,288 +1483,3 @@ async def process_checkout(callback: CallbackQuery, state: FSMContext):
                 )
                 
                 if promo_code:
-                    await conn.execute("INSERT INTO user_promo_usage (telegram_id, promo_code) VALUES ($1, $2) ON CONFLICT DO NOTHING;", user_id, promo_code)
-                
-                has_subscription_bought = False
-                total_months_added = 0
-                
-                for item in cart_items:
-                    if item['is_subscription']:
-                        has_subscription_bought = True
-                        months = item['duration_months']
-                        total_months_added += months
-                        
-                        existing_sub = await conn.fetchrow(
-                            "SELECT expires_at FROM active_subscriptions WHERE telegram_id = $1;", 
-                            user_id
-                        )
-                        
-                        if existing_sub and existing_sub['expires_at'] > now:
-                            new_expiry = existing_sub['expires_at'] + datetime.timedelta(days=30 * months)
-                            await conn.execute(
-                                "UPDATE active_subscriptions SET expires_at = $1, user_full_name = $2, notified_expiry = FALSE WHERE telegram_id = $3;",
-                                new_expiry, user_full_name, user_id
-                            )
-                        else:
-                            new_expiry = now + datetime.timedelta(days=30 * months)
-                            await conn.execute(
-                                """INSERT INTO active_subscriptions (telegram_id, user_full_name, expires_at, notified_expiry) 
-                                   VALUES ($1, $2, $3, FALSE)
-                                   ON CONFLICT (telegram_id) DO UPDATE 
-                                   SET expires_at = $3, user_full_name = $2, notified_expiry = FALSE;""",
-                                user_id, user_full_name, new_expiry
-                            )
-
-                await conn.execute("DELETE FROM cart WHERE telegram_id = $1;", user_id)
-                
-        await state.update_data(promo_code=None, promo_discount=0, promo_tickets=0)
-                
-        await callback.answer("✅ Η αγορά ήταν επιτυχής!", show_alert=False)
-        await callback.message.edit_text("✅ **Η παραγγελία ολοκληρώθηκε με επιτυχία!**", parse_mode="Markdown")
-        
-        custom_items_bought = [item for item in cart_items if item.get('is_custom')]
-        
-        if custom_items_bought:
-            order_code = generate_order_code()
-            items_text = ", ".join([i['description'] for i in custom_items_bought])
-            
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(
-                        admin_id, 
-                        f"🔔 **ΝΕΑ CUSTOM ΠΑΡΑΓΓΕΛΙΑ!** 🔔\n\n👤 Από: {user_full_name} (`{user_id}`)\n🛒 Είδη: {items_text}\n🔑 Κωδικός: `#{order_code}`",
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
-            
-            encoded_text = urllib.parse.quote(f"Γεια σου Δήμητρα! Ο κωδικός μου είναι #{order_code}.")
-            smart_link = f"{ADMIN_LINK}?text={encoded_text}"
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="💬 Στείλε τον Κωδικό στην Dimitra", url=smart_link)
-            ]])
-            
-            await bot.send_message(
-                user_id,
-                f"🎉 **Ευχαριστούμε για την αγορά!**\n\nΟ μοναδικός κωδικός σου είναι: **#{order_code}**\n\nΠάτα το παρακάτω κουμπί για να μου στείλεις απευθείας τον κωδικό και τα υπόλοιπα άστα επάνω μου 💋❤️:",
-                reply_markup=kb,
-                parse_mode="Markdown"
-            )
-            
-        if has_subscription_bought:
-            sub_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="💎 Είσοδος στο VIP Group", url=PREMIUM_GROUP_LINK)
-            ]])
-            await bot.send_message(
-                user_id,
-                "✅ **Η συνδρομή σου ενεργοποιήθηκε επιτυχώς!**\n\nΠάτα το παρακάτω κουμπί για να μπεις αμέσως στην Premium ομάδα:",
-                reply_markup=sub_kb,
-                parse_mode="Markdown"
-            )
-
-        if tickets_to_add > 0:
-            try:
-                await bot.send_message(
-                    user_id, 
-                    f"🎉 **Συγχαρητήρια! Πήρες συνολικά {tickets_to_add} εισιτήριο(α) για την κλήρωση!**", 
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-        
-        for item in cart_items:
-            if item['is_subscription'] or item.get('is_custom'):
-                continue
-            try:
-                file_ids = item['file_ids']
-                media_types = item['media_types']
-                description = item['description']
-
-                if len(file_ids) == 1:
-                    if media_types[0] == "photo":
-                        await bot.send_photo(chat_id=user_id, photo=file_ids[0], caption=f"🎉 {description}")
-                    elif media_types[0] == "video":
-                        await bot.send_video(chat_id=user_id, video=file_ids[0], caption=f"🎉 {description}")
-                else:
-                    media_group = []
-                    for i, (f_id, m_type) in enumerate(zip(file_ids, media_types)):
-                        caption = f"🎉 {description}" if i == 0 else None
-                        if m_type == "photo":
-                            media_group.append(InputMediaPhoto(media=f_id, caption=caption))
-                        else:
-                            media_group.append(InputMediaVideo(media=f_id, caption=caption))
-                            
-                    await bot.send_media_group(chat_id=user_id, media=media_group)
-                    
-            except Exception as e:
-                logging.error(f"Error sending media to {user_id}: {e}")
-                
-    except Exception as e:
-        logging.error(f"Critical error during checkout for user {user_id}: {e}")
-        await callback.answer("❌ Προέκυψε σφάλμα κατά την ολοκλήρωση της αγοράς. Δοκιμάστε ξανά.", show_alert=True)
-
-
-# --- USER HANDLERS ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    user_id = message.from_user.id
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO users (telegram_id) VALUES ($1) ON CONFLICT (telegram_id) DO NOTHING;",
-            user_id
-        )
-    await message.answer(
-        f"Καλωσόρισες, {message.from_user.first_name}!\nΧρησιμοποίησε το μενού παρακάτω για να πλοηγηθείς.",
-        reply_markup=main_menu()
-    )
-
-@dp.message(F.text == "🔗 Links & Support")
-async def show_support(message: types.Message):
-    await message.answer(
-        "Μπορείς να συνδεθείς στην κοινότητά μας ή να επικοινωνήσεις απευθείας μαζί μας παρακάτω:",
-        reply_markup=support_keyboard()
-    )
-
-# --- PROFILE HANDLERS ---
-@dp.message(F.text == "👤 My Profile")
-async def show_profile(message: types.Message):
-    try:
-        user_id = message.from_user.id
-        async with db_pool.acquire() as conn:
-            user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
-            sub_info = await conn.fetchrow("SELECT expires_at FROM active_subscriptions WHERE telegram_id = $1;", user_id)
-            purchases = await conn.fetch(
-                "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
-                user_id
-            )
-
-        if not user:
-            await message.answer("Δεν βρέθηκαν στοιχεία προφίλ. Πληκτρολογήστε /start.")
-            return
-
-        balance = user['balance']
-        points = user['lifetime_points']
-        tickets = user['giveaway_tickets']
-        
-        level_title = get_user_level(points)
-        bar_string, next_level_string = get_level_progress(points)
-
-        profile_text = (
-            f"👤 **Το Προφίλ σου**\n\n"
-            f"👛 **Υπόλοιπο:** {balance}€\n"
-        )
-        
-        now = datetime.datetime.now()
-        if sub_info and sub_info['expires_at'] > now:
-            profile_text += f"⭐ **Premium Συνδρομή:** Ενεργή έως {sub_info['expires_at'].strftime('%d/%m/%Y %H:%M')}\n"
-        else:
-            profile_text += f"⭐ **Premium Συνδρομή:** Ανενεργή\n"
-
-        profile_text += (
-            f"⭐ **Πόντοι:** {points}\n"
-            f"🎖️ **Βαθμίδα:** {level_title}\n"
-            f"{bar_string}\n"
-            f"📈 _{next_level_string}_\n\n"
-            f"🎟️ **Εισιτήρια Κλήρωσης:** {tickets}\n\n"
-            f"📜 **Πρόσφατες Αγορές:**\n"
-        )
-
-        if purchases:
-            for p in purchases:
-                profile_text += f"- {p['items_summary']} ({p['total_price']}€) στις {p['created_at'].strftime('%d/%m %H:%M')}\n"
-        else:
-            profile_text += "Δεν έχεις κάνει κάποια αγορά ακόμα."
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏆  Δες όλα τα Levels & Πόντους", callback_data="show_levels_info")]
-        ])
-
-        await message.answer(profile_text, parse_mode="Markdown", reply_markup=keyboard)
-        
-    except Exception as e:
-        logging.error(f"Error in show_profile for user {message.from_user.id}: {e}")
-        await message.answer("❌ Προέκυψε κάποιο πρόβλημα κατά την εμφάνιση του προφίλ σου. Δοκίμασε ξανά αργότερα.")
-
-@dp.callback_query(F.data == "show_levels_info")
-async def show_levels_info_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    
-    async with db_pool.acquire() as conn:
-        user_points = await conn.fetchval("SELECT lifetime_points FROM users WHERE telegram_id = $1;", user_id) or 0
-        
-    bar_string, next_level_string = get_level_progress(user_points)
-
-    text = (
-        "🏆 **Βαθμίδες (Levels) & Στάδια**\n\n"
-        "Ανέβασε επίπεδο μαζεύοντας πόντους από τις αγορές σου:\n\n"
-        "🐣 **Πρωτάρης🐣🔞** (0 - 149 πόντοι)\n"
-        "💋 **Τολμηρός💋🔞** (150 - 299 πόντοι) ➡️ **Δώρο:** +1 bundle 10 hot photos +5€ bot token \n"
-        "🔥 **Ορεξάτος👀🔥🔞** (300 - 499 πόντοι) ➡️ **Δώρο:** +30€ bot token \n"
-        "👑 **Αφέντης💋👑🔞** (500 - 999 πόντοι) ➡️ **Δώρο:** +1 custom video (Custom Video +10 m 🔥🔥) +5 hot video🔞 +10 bot token \n"
-        "❤️ **Ultimate VIP❤️🔞** (1000+ πόντοι) ➡️ **Δώρο:** +1 FaceTime (+30 m) +3 hottest videos🔞 +10 nudes photos \n\n"
-        "🎁 **Όροι & Εξαργύρωση:**\n"
-        "• Μπορείς να πάρεις την ανταμοιβή σου αποκλειστικά όταν φτάσεις στο αντίστοιχο level.\n"
-        "• Μόλις το φτάσεις, στείλε προσωπικό μήνυμα στην Dimitra για να το εξαργυρώσεις!\n\n"
-        f"⭐ Έχεις συγκεντρώσει: **{user_points} πόντους**.\n"
-        f"{bar_string}\n"
-        f"🎯 {next_level_string}"
-    )
-
-    await callback.message.answer(text, parse_mode="Markdown")
-    await callback.answer()
-
-
-@dp.message(F.text == "🎁 Giveaway")
-async def show_giveaway(message: types.Message):
-    async with db_pool.acquire() as conn:
-        settings = await conn.fetchrow("SELECT ends_at FROM giveaway_settings WHERE id = 1;")
-        now = datetime.datetime.now()
-        
-        if settings and settings['ends_at'] <= now:
-            text = (
-                f"🎁 **Μεγάλη Κλήρωση**\n\n"
-                f"🏁 **Η προηγούμενη κλήρωση έχει λήξει!**\n"
-                f"⏳ Σύντομα θα ξεκινήσει καινούρια. Μείνε συντονισμένος!\n\n"
-                f"💡 *Κάθε 50 πόντοι (10€ αγορών) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
-            )
-        else:
-            total_tickets = await conn.fetchval("SELECT SUM(giveaway_tickets) FROM users;") or 0
-            
-            remaining_time = settings['ends_at'] - now
-            hours, remainder = divmod(int(remaining_time.total_seconds()), 3600)
-            minutes, _ = divmod(remainder, 60)
-
-            text = (
-                f"🎁 **Μεγάλη Κλήρωση**\n\n"
-                f"🎟️ **Συνολικά Εισιτήρια που έχουν δοθεί:** {total_tickets}\n"
-                f"⏳ **Λήξη Κλήρωσης σε:** {hours} ώρες και {minutes} λεπτά!\n\n"
-                f"💡 *Κάθε 50 πόντοι (10€ αγορών) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
-            )
-            
-    await message.answer(text, parse_mode="Markdown")
-
-@dp.message(F.text == "ℹ️ Info")
-async def show_info(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Προβολή Υλικού 🔞", callback_data="open_catalog")]
-    ])
-    await message.answer(
-        "Καλώς ήρθες! Είμαι η Δήμητρα, 22 χρόνων, με βάση τη Θεσσαλονίκη. Χαίρομαι που με βρήκες. Εδώ μέσα μπορείς να ανακαλύψεις, να ξεκλειδώσεις και να αγοράσεις αυτόματα το πιο ξεχωριστό μου υλικό. Περιηγήσου στο μενού παρακάτω για να δεις τις επιλογές. Αν θες να τα πούμε, στείλε μου προσωπικό μήνυμα! Σε περιμένω... ❤️💋🔞",
-        reply_markup=kb
-    )
-
-@dp.callback_query(F.data == "open_catalog")
-async def inline_show_catalog(callback: CallbackQuery):
-    await callback.answer()
-    await show_catalog(callback.message)
-
-# --- MAIN EXECUTION ---
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    await init_db()
-    asyncio.create_task(check_subscriptions_loop())
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
