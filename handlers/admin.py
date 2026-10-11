@@ -25,8 +25,9 @@ async def admin_dashboard(message: types.Message):
         lvl3 = await conn.fetchval("SELECT COUNT(*) FROM users WHERE lifetime_points BETWEEN 651 AND 900;")
         lvl4 = await conn.fetchval("SELECT COUNT(*) FROM users WHERE lifetime_points >= 901;")
         
-        paysafe_sum = await conn.fetchval("SELECT SUM(amount) FROM paysafe_requests WHERE status = 'accepted';") or 0.0
-        moonpay_sum = await conn.fetchval("SELECT SUM(amount) FROM moonpay_requests WHERE status = 'accepted';") or 0.0
+        # Ασφαλής μετατροπή σε float για να μην υπάρχει πρόβλημα στην πρόσθεση
+        paysafe_sum = float(await conn.fetchval("SELECT SUM(amount) FROM paysafe_requests WHERE status = 'accepted';") or 0.0)
+        moonpay_sum = float(await conn.fetchval("SELECT SUM(amount) FROM moonpay_requests WHERE status = 'accepted';") or 0.0)
         total_revenue = paysafe_sum + moonpay_sum
         
     stats_text = (
