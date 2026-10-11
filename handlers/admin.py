@@ -335,3 +335,88 @@ async def process_admin_delete(callback: CallbackQuery):
         await conn.execute("DELETE FROM locked_media WHERE id = $1;", media_id)
     await callback.answer("✅ Διαγράφηκε οριστικά!", show_alert=True)
     await callback.message.delete()
+ # --- 6. ΕΓΚΡΙΣΗ / ΑΠΟΡΡΙΨΗ ΚΑΤΑΘΕΣΕΩΝ (ADMIN) ---
+
+@router.callback_query(F.data.startswith("ps_acc_"))
+async def admin_accept_paysafe(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    req_id = int(callback.data.split("_")[2])
+    db_pool = await get_db()
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT telegram_id, amount, status FROM paysafe_requests WHERE id = $1;", req_id)
+        if not row or row['status'] != 'pending':
+            await callback.answer("❌ Μη έγκυρο ή ήδη ολοκληρωμένο.", show_alert=True)
+            return
+            
+        await conn.execute("UPDATE paysafe_requests SET status = 'accepted' WHERE id = $1;", req_id)
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;", row['amount'], row['telegram_id'])
+        
+    await callback.message.edit_text(callback.message.text + f"\n\n✅ **ΑΠΟΔΕΚΤΟ από {callback.from_user.first_name}!**")
+    try:
+        await callback.message.bot.send_message(row['telegram_id'], f"🎉 Η κατάθεση PaySafe εγκρίθηκε! Προστέθηκαν {row['amount']}€.")
+    except Exception:
+        pass
+    await callback.answer("Εγκρίθηκε!")
+
+@router.callback_query(F.data.startswith("ps_rej_"))
+async def admin_reject_paysafe(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    req_id = int(callback.data.split("_")[2])
+    db_pool = await get_db()
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT telegram_id, status FROM paysafe_requests WHERE id = $1;", req_id)
+        if not row or row['status'] != 'pending':
+            await callback.answer("❌ Μη έγκυρο ή ήδη ολοκληρωμένο.", show_alert=True)
+            return
+        await conn.execute("UPDATE paysafe_requests SET status = 'rejected' WHERE id = $1;", req_id)
+        
+    await callback.message.edit_text(callback.message.text + f"\n\n❌ **ΑΠΟΡΡΙΦΘΗΚΕ από {callback.from_user.first_name}!**")
+    try:
+        await callback.message.bot.send_message(row['telegram_id'], "❌ Το αίτημα PaySafe απορρίφθηκε.")
+    except Exception:
+        pass
+    await callback.answer("Απορρίφθηκε!")
+
+@router.callback_query(F.data.startswith("mp_acc_"))
+async def admin_accept_moonpay(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    req_id = int(callback.data.split("_")[2])
+    db_pool = await get_db()
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT telegram_id, amount, status FROM moonpay_requests WHERE id = $1;", req_id)
+        if not row or row['status'] != 'pending':
+            await callback.answer("❌ Μη έγκυρο ή ήδη ολοκληρωμένο.", show_alert=True)
+            return
+            
+        await conn.execute("UPDATE moonpay_requests SET status = 'accepted' WHERE id = $1;", req_id)
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE telegram_id = $2;", row['amount'], row['telegram_id'])
+        
+    await callback.message.edit_caption(caption=callback.message.caption + f"\n\n✅ **ΑΠΟΔΕΚΤΟ από {callback.from_user.first_name}!**")
+    try:
+        await callback.message.bot.send_message(row['telegram_id'], f"🎉 Η κατάθεση MoonPay εγκρίθηκε! Προστέθηκαν {row['amount']}€.")
+    except Exception:
+        pass
+    await callback.answer("Εγκρίθηκε!")
+
+@router.callback_query(F.data.startswith("mp_rej_"))
+async def admin_reject_moonpay(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    req_id = int(callback.data.split("_")[2])
+    db_pool = await get_db()
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT telegram_id, status FROM moonpay_requests WHERE id = $1;", req_id)
+        if not row or row['status'] != 'pending':
+            await callback.answer("❌ Μη έγκυρο ή ήδη ολοκληρωμένο.", show_alert=True)
+            return
+        await conn.execute("UPDATE moonpay_requests SET status = 'rejected' WHERE id = $1;", req_id)
+        
+    await callback.message.edit_caption(caption=callback.message.caption + f"\n\n❌ **ΑΠΟΡΡΙΦΘΗΚΕ από {callback.from_user.first_name}!**")
+    try:
+        await callback.message.bot.send_message(row['telegram_id'], "❌ Το αίτημα MoonPay απορρίφθηκε.")
+    except Exception:
+        pass
+    await callback.answer("Απορρίφθηκε!")   

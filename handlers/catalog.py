@@ -1,7 +1,7 @@
 from aiogram import Router, F, types
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_db
-from utils import get_user_level_info, get_level_progress
+from utils import get_user_level_info, get_level_progress, LEVEL_THRESHOLDS
 
 router = Router()
 
@@ -16,7 +16,7 @@ async def show_catalog_main(message: types.Message):
     ])
     await message.answer("🛍️ **Επίλεξε κατηγορία καταλόγου:**", reply_markup=keyboard, parse_mode="Markdown")
 
-# --- ΕΜΦΑΝΙΣΗ ΑΝΑ ΚΑΤΗΓΟΡΙΑ (Με αύξουσα ταξινόμηση) ---
+# --- ΕΜΦΑΝΙΣΗ ΑΝΑ ΚΑΤΗΓΟΡΙΑ ---
 @router.callback_query(F.data.startswith("cat_"))
 async def show_category_items(callback: CallbackQuery):
     category = callback.data.split("_")[1]
@@ -31,7 +31,6 @@ async def show_category_items(callback: CallbackQuery):
     title = category_names.get(category, "Κατάλογος")
     
     async with db_pool.acquire() as conn:
-        # Φέρνει μόνο όσα ΔΕΝ είναι Gallery, φιλτράρει ανά κατηγορία και ταξινομεί από το φθηνότερο στο ακριβότερο!
         items = await conn.fetch(
             "SELECT * FROM locked_media WHERE is_gallery = FALSE AND category = $1 ORDER BY price ASC;", 
             category
@@ -53,7 +52,7 @@ async def show_category_items(callback: CallbackQuery):
     
     await callback.answer()
 
-# --- ΝΕΑ ΛΕΙΤΟΥΡΓΙΑ: GALLERY ---
+# --- GALLERY (Με Εμφάνιση Κλειδωμένων) ---
 @router.message(F.text == "🖼️ Gallery")
 async def show_gallery(message: types.Message):
     user_id = message.from_user.id
@@ -66,23 +65,42 @@ async def show_gallery(message: types.Message):
     bar_string, next_level_string, progress_percent = get_level_progress(points)
     
     async with db_pool.acquire() as conn:
-        # Ξεκλειδώνει ΜΟΝΟ όσα έχουν χαμηλότερο level, Ή το ίδιο level αλλά μικρότερο/ίσο % !
+        # Φέρνουμε ΟΛΑ τα αντικείμενα της Gallery
         gallery_items = await conn.fetch("""
             SELECT * FROM locked_media 
             WHERE is_gallery = TRUE 
-            AND (unlock_level < $1 OR (unlock_level = $1 AND unlock_percentage <= $2))
             ORDER BY unlock_level ASC, unlock_percentage ASC;
-        """, current_level_num, progress_percent)
+        """)
 
     if gallery_items:
-        await message.answer("🔓 **Το ξεκλειδωμένο σου υλικό:**", parse_mode="Markdown")
+        await message.answer("🖼️ **Η Gallery της Δήμητρας:**\n_Εδώ βλέπεις όλο το υλικό! Κάνε αγορές για να το ξεκλειδώσεις._", parse_mode="Markdown")
         for item in gallery_items:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"🛒 Προσθήκη ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
-            ])
-            await message.answer(f"🖼️ {item['description']}", reply_markup=kb, parse_mode="Markdown")
+            req_lvl = item['unlock_level']
+            req_perc = item['unlock_percentage']
+            
+            # Βρίσκουμε το όνομα του απαιτούμενου Level
+            req_title = "Άγνωστο"
+            for _, _, title, lvl_num in LEVEL_THRESHOLDS:
+                if lvl_num == req_lvl:
+                    req_title = title
+                    break
+            
+            # Ελέγχουμε αν ο χρήστης έχει πρόσβαση
+            is_unlocked = False
+            if current_level_num > req_lvl:
+                is_unlocked = True
+            elif current_level_num == req_lvl and progress_percent >= req_perc:
+                is_unlocked = True
+            
+            if is_unlocked:
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=f"🛒 Προσθήκη ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
+                ])
+                await message.answer(f"🔓 **{item['description']}**\n_(Ξεκλείδωτο)_", reply_markup=kb, parse_mode="Markdown")
+            else:
+                await message.answer(f"🔒 **{item['description']}**\n⚠️ _Απαιτείται: {req_title} & {req_perc}% της μπάρας_", parse_mode="Markdown")
     else:
-        await message.answer("🔒 Δεν έχεις ξεκλειδώσει ακόμα κάποιο υλικό στην Gallery. Κάνε αγορές για να μαζέψεις πόντους!")
+        await message.answer("Δεν υπάρχει ακόμα υλικό στην Gallery.")
 
     # Εμφάνιση των Πόντων, του Progress Bar και του κειμένου με τα Δώρα
     perks_text = (
@@ -103,5 +121,3 @@ async def show_gallery(message: types.Message):
     )
     
     await message.answer(perks_text, parse_mode="Markdown")
-
-# Η προσθήκη στο καλάθι (addcart_...) θα μπει στο επόμενο αρχείο (cart.py) μαζί με το Checkout!
