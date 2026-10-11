@@ -203,21 +203,43 @@ async def process_gal_perc(message: types.Message, state: FSMContext):
 
 @router.message(UploadMedia.waiting_for_description, F.text)
 async def receive_desc(message: types.Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    await message.answer("💰 Τιμή (σε ευρώ):")
-    await state.set_state(UploadMedia.waiting_for_price)
+    data = await state.get_data()
+    description = message.text
+    await state.update_data(description=description)
+    
+    if data.get('is_gallery', False):
+        # Αν είναι Gallery, το ανεβάζουμε ΑΜΕΣΩΣ με τιμή 0€ (Δωρεάν)
+        db_pool = await get_db()
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months, is_custom, category, is_gallery, unlock_level, unlock_percentage) 
+                   VALUES ($1, $2, $3, $4, FALSE, 0, FALSE, $5, $6, $7, $8)""",
+                data['file_ids'], data['media_types'], description, 0.0, data.get('category', 'photo'), True, data.get('unlock_level', 0), data.get('unlock_percentage', 0)
+            )
+        await message.answer("✅ Το υλικό ανέβηκε στην Gallery! (Ρυθμίστηκε αυτόματα ως Δωρεάν ξεκλείδωμα).")
+        await state.clear()
+    else:
+        # Αν είναι Κατάλογος, ρωτάμε κανονικά για τιμή
+        await message.answer("💰 Τιμή (σε ευρώ):")
+        await state.set_state(UploadMedia.waiting_for_price)
 
 @router.message(UploadMedia.waiting_for_price, F.text)
 async def receive_price(message: types.Message, state: FSMContext):
     data = await state.get_data()
     db_pool = await get_db()
+    try:
+        price = float(message.text.replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Λάθος αριθμός. Ξαναγράψε την τιμή:")
+        return
+        
     async with db_pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO locked_media (file_ids, media_types, description, price, is_subscription, duration_months, is_custom, category, is_gallery, unlock_level, unlock_percentage) 
                VALUES ($1, $2, $3, $4, FALSE, 0, FALSE, $5, $6, $7, $8)""",
-            data['file_ids'], data['media_types'], data['description'], float(message.text.replace(",", ".")), data.get('category', 'photo'), data.get('is_gallery', False), data.get('unlock_level', 0), data.get('unlock_percentage', 0)
+            data['file_ids'], data['media_types'], data['description'], price, data.get('category', 'photo'), False, 0, 0
         )
-    await message.answer("✅ Το υλικό ανέβηκε επιτυχώς!")
+    await message.answer("✅ Το υλικό ανέβηκε στον Κατάλογο επιτυχώς!")
     await state.clear()
 
 # --- 5. ΠΡΟΣΘΗΚΗ CUSTOM, ΣΥΝΔΡΟΜΗΣ & ΔΙΑΧΕΙΡΙΣΗ ΧΡΗΣΤΩΝ ---
@@ -336,7 +358,8 @@ async def process_admin_delete(callback: CallbackQuery):
         await conn.execute("DELETE FROM locked_media WHERE id = $1;", media_id)
     await callback.answer("✅ Διαγράφηκε οριστικά!", show_alert=True)
     await callback.message.delete()
- # --- 6. ΕΓΚΡΙΣΗ / ΑΠΟΡΡΙΨΗ ΚΑΤΑΘΕΣΕΩΝ (ADMIN) ---
+
+# --- 6. ΕΓΚΡΙΣΗ / ΑΠΟΡΡΙΨΗ ΚΑΤΑΘΕΣΕΩΝ (ADMIN) ---
 
 @router.callback_query(F.data.startswith("ps_acc_"))
 async def admin_accept_paysafe(callback: CallbackQuery):
@@ -420,4 +443,4 @@ async def admin_reject_moonpay(callback: CallbackQuery):
         await callback.message.bot.send_message(row['telegram_id'], "❌ Το αίτημα MoonPay απορρίφθηκε.")
     except Exception:
         pass
-    await callback.answer("Απορρίφθηκε!")   
+    await callback.answer("Απορρίφθηκε!")

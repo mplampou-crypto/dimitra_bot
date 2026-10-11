@@ -1,5 +1,5 @@
 from aiogram import Router, F, types
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 from database import get_db
 from utils import get_user_level_info, get_level_progress, LEVEL_THRESHOLDS
 
@@ -52,7 +52,7 @@ async def show_category_items(callback: CallbackQuery):
     
     await callback.answer()
 
-# --- GALLERY (Με Εμφάνιση Κλειδωμένων) ---
+# --- GALLERY (Με Εμφάνιση Κλειδωμένων & Δωρεάν Λήψη) ---
 @router.message(F.text == "🖼️ Gallery")
 async def show_gallery(message: types.Message):
     user_id = message.from_user.id
@@ -65,7 +65,6 @@ async def show_gallery(message: types.Message):
     bar_string, next_level_string, progress_percent = get_level_progress(points)
     
     async with db_pool.acquire() as conn:
-        # Φέρνουμε ΟΛΑ τα αντικείμενα της Gallery
         gallery_items = await conn.fetch("""
             SELECT * FROM locked_media 
             WHERE is_gallery = TRUE 
@@ -73,19 +72,17 @@ async def show_gallery(message: types.Message):
         """)
 
     if gallery_items:
-        await message.answer("🖼️ **Η Gallery της Δήμητρας:**\n_Εδώ βλέπεις όλο το υλικό! Κάνε αγορές για να το ξεκλειδώσεις._", parse_mode="Markdown")
+        await message.answer("🖼️ **Η Gallery της Δήμητρας:**\n_Εδώ βλέπεις όλο το υλικό! Κάνε αγορές για να το ξεκλειδώσεις δωρεάν._", parse_mode="Markdown")
         for item in gallery_items:
             req_lvl = item['unlock_level']
             req_perc = item['unlock_percentage']
             
-            # Βρίσκουμε το όνομα του απαιτούμενου Level
             req_title = "Άγνωστο"
             for _, _, title, lvl_num in LEVEL_THRESHOLDS:
                 if lvl_num == req_lvl:
                     req_title = title
                     break
             
-            # Ελέγχουμε αν ο χρήστης έχει πρόσβαση
             is_unlocked = False
             if current_level_num > req_lvl:
                 is_unlocked = True
@@ -93,16 +90,16 @@ async def show_gallery(message: types.Message):
                 is_unlocked = True
             
             if is_unlocked:
+                # ΝΕΟ: Κουμπί για ΑΠΕΥΘΕΙΑΣ προβολή, όχι καλάθι!
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=f"🛒 Προσθήκη ({item['price']}€)", callback_data=f"addcart_{item['id']}")]
+                    [InlineKeyboardButton(text="👁️ Προβολή Υλικού", callback_data=f"viewgal_{item['id']}")]
                 ])
-                await message.answer(f"🔓 **{item['description']}**\n_(Ξεκλείδωτο)_", reply_markup=kb, parse_mode="Markdown")
+                await message.answer(f"🔓 **{item['description']}**\n_(Διαθέσιμο)_", reply_markup=kb, parse_mode="Markdown")
             else:
                 await message.answer(f"🔒 **{item['description']}**\n⚠️ _Απαιτείται: {req_title} & {req_perc}% της μπάρας_", parse_mode="Markdown")
     else:
         await message.answer("Δεν υπάρχει ακόμα υλικό στην Gallery.")
 
-    # Εμφάνιση των Πόντων, του Progress Bar και του κειμένου με τα Δώρα
     perks_text = (
         f"\n\n🎖️ **Το Επίπεδό σου:** {current_title}\n"
         f"⭐ **Πόντοι:** {points}\n"
@@ -121,3 +118,39 @@ async def show_gallery(message: types.Message):
     )
     
     await message.answer(perks_text, parse_mode="Markdown")
+
+# --- ΝΕΟΣ ΜΗΧΑΝΙΣΜΟΣ ΠΡΟΒΟΛΗΣ GALLERY ΥΛΙΚΟΥ ---
+@router.callback_query(F.data.startswith("viewgal_"))
+async def view_gallery_item(callback: CallbackQuery):
+    media_id = int(callback.data.split("_")[1])
+    db_pool = await get_db()
+    
+    async with db_pool.acquire() as conn:
+        item = await conn.fetchrow("SELECT file_ids, media_types, description FROM locked_media WHERE id = $1;", media_id)
+    
+    if not item:
+        await callback.answer("Το υλικό δεν βρέθηκε ή έχει διαγραφεί.", show_alert=True)
+        return
+        
+    await callback.answer("Φόρτωση υλικού...", show_alert=False)
+    
+    file_ids = item['file_ids']
+    media_types = item['media_types']
+    user_id = callback.from_user.id
+    
+    # Αποστολή του υλικού απευθείας στον χρήστη
+    try:
+        if len(file_ids) == 1:
+            if media_types[0] == "photo":
+                await callback.message.bot.send_photo(chat_id=user_id, photo=file_ids[0], caption=f"🖼️ {item['description']}")
+            else:
+                await callback.message.bot.send_video(chat_id=user_id, video=file_ids[0], caption=f"🖼️ {item['description']}")
+        else:
+            media_group = [
+                InputMediaPhoto(media=f_id, caption=f"🖼️ {item['description']}" if i==0 else None) if m_type == "photo" 
+                else InputMediaVideo(media=f_id, caption=f"🖼️ {item['description']}" if i==0 else None) 
+                for i, (f_id, m_type) in enumerate(zip(file_ids, media_types))
+            ]
+            await callback.message.bot.send_media_group(chat_id=user_id, media=media_group)
+    except Exception as e:
+        await callback.message.answer("❌ Υπήρξε πρόβλημα κατά την αποστολή του υλικού.")
