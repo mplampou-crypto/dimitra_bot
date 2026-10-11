@@ -7,7 +7,7 @@ async def init_db():
     global db_pool
     db_pool = await asyncpg.create_pool(DB_URL)
     async with db_pool.acquire() as connection:
-        # Χρήστες
+        # 1. Χρήστες
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 telegram_id BIGINT PRIMARY KEY,
@@ -21,7 +21,7 @@ async def init_db():
             );
         """)
         
-        # Αγορές
+        # 2. Αγορές
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS purchases (
                 id SERIAL PRIMARY KEY,
@@ -32,7 +32,7 @@ async def init_db():
             );
         """)
         
-        # Κατάλογος & Gallery (Αναβαθμισμένο)
+        # 3. Κατάλογος & Gallery
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS locked_media (
                 id SERIAL PRIMARY KEY,
@@ -40,7 +40,7 @@ async def init_db():
                 media_types TEXT[] DEFAULT ARRAY[]::TEXT[],
                 description TEXT,
                 price NUMERIC(10, 2) NOT NULL,
-                category TEXT DEFAULT 'photo', -- 'sub', 'vip', 'photo', 'video'
+                category TEXT DEFAULT 'photo',
                 is_gallery BOOLEAN DEFAULT FALSE,
                 unlock_level INT DEFAULT 0,
                 unlock_percentage INT DEFAULT 0,
@@ -50,7 +50,7 @@ async def init_db():
             );
         """)
         
-        # Ενεργές Συνδρομές
+        # 4. Ενεργές Συνδρομές
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS active_subscriptions (
                 id SERIAL PRIMARY KEY,
@@ -61,7 +61,7 @@ async def init_db():
             );
         """)
         
-        # Καλάθι
+        # 5. Καλάθι
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS cart (
                 id SERIAL PRIMARY KEY,
@@ -71,7 +71,7 @@ async def init_db():
             );
         """)
         
-        # Giveaway (Προστέθηκαν τα Δώρα)
+        # 6. Giveaway Settings
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS giveaway_settings (
                 id INT PRIMARY KEY,
@@ -79,13 +79,8 @@ async def init_db():
                 prizes TEXT
             );
         """)
-        await connection.execute("""
-            INSERT INTO giveaway_settings (id, ends_at, prizes) 
-            VALUES (1, '2000-01-01 00:00:00', '1. Καένα δώρο ακόμα') 
-            ON CONFLICT (id) DO NOTHING;
-        """)
 
-        # Promo Codes (Προστέθηκε το min_level)
+        # 7. Promo Codes
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS promo_codes (
                 code TEXT PRIMARY KEY,
@@ -96,7 +91,7 @@ async def init_db():
             );
         """)
         
-        # Χρήση Promo Codes
+        # 8. Χρήση Promo Codes
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS user_promo_usage (
                 telegram_id BIGINT,
@@ -106,7 +101,7 @@ async def init_db():
             );
         """)
         
-        # Αιτήματα PaySafe
+        # 9. Αιτήματα PaySafe
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS paysafe_requests (
                 id SERIAL PRIMARY KEY,
@@ -118,7 +113,7 @@ async def init_db():
             );
         """)
 
-        # Αιτήματα MoonPay (Κάρτα)
+        # 10. Αιτήματα MoonPay
         await connection.execute("""
             CREATE TABLE IF NOT EXISTS moonpay_requests (
                 id SERIAL PRIMARY KEY,
@@ -130,7 +125,8 @@ async def init_db():
             );
         """)
 
-        # Ασφάλεια για updates (Αν η βάση υπάρχει ήδη, να προστεθούν οι νέες στήλες)
+        # --- DATABASE UPGRADE SCRIPT ---
+        # Τρέχει ΠΡΙΝ τα INSERT για να βεβαιωθούμε ότι οι νέες στήλες υπάρχουν!
         try:
             await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'photo';")
             await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS is_gallery BOOLEAN DEFAULT FALSE;")
@@ -138,8 +134,15 @@ async def init_db():
             await connection.execute("ALTER TABLE locked_media ADD COLUMN IF NOT EXISTS unlock_percentage INT DEFAULT 0;")
             await connection.execute("ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS min_level INT DEFAULT 0;")
             await connection.execute("ALTER TABLE giveaway_settings ADD COLUMN IF NOT EXISTS prizes TEXT;")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Σημείωση Βάσης Δεδομένων (Αναμενόμενο αν είναι ήδη ενημερωμένη): {e}")
+
+        # Τώρα που η στήλη 'prizes' έχει σίγουρα προστεθεί, κάνουμε το INSERT με ασφάλεια.
+        await connection.execute("""
+            INSERT INTO giveaway_settings (id, ends_at, prizes) 
+            VALUES (1, '2000-01-01 00:00:00', '1. Τα δώρα θα ανακοινωθούν σύντομα!') 
+            ON CONFLICT (id) DO NOTHING;
+        """)
 
 async def get_db():
     return db_pool
