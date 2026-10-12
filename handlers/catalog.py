@@ -40,7 +40,7 @@ async def show_category_items(callback: CallbackQuery):
         await callback.answer("Αυτή η κατηγορία είναι άδεια προς το παρόν!", show_alert=True)
         return
         
-    await callback.message.answer(f"Άνοιξες την κατηγορία: **{title}**\nΕδώ εμφανίζονται από το φθηνότερο προς το ακριβότερο!", parse_mode="Markdown")
+    await callback.message.answer(f"Άνοιξες την κατηγορία: **{title}**\n", parse_mode="Markdown")
     
     for item in items:
         kb = InlineKeyboardMarkup(inline_keyboard=[
