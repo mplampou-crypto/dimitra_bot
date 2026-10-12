@@ -10,7 +10,7 @@ router = Router()
 async def show_catalog_main(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⭐ Συνδρομές", callback_data="cat_sub")],
-        [InlineKeyboardButton(text="💎 VIP (Customs)", callback_data="cat_vip")],
+        [InlineKeyboardButton(text="💎 VIP ", callback_data="cat_vip")],
         [InlineKeyboardButton(text="📸 Φωτογραφίες", callback_data="cat_photo")],
         [InlineKeyboardButton(text="🎥 Βίντεο", callback_data="cat_video")]
     ])
