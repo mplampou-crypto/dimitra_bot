@@ -13,7 +13,7 @@ router = Router()
 HELP_PHOTO_1 = "https://dummyimage.com/600x400/1a1a1a/ffffff&text=Vima+1"
 HELP_PHOTO_2 = "https://dummyimage.com/600x400/1a1a1a/ffffff&text=Vima+2"
 
-@router.message(F.text == "👛 Wallet")
+@router.message(F.text == "💰 Wallet")
 async def show_wallet(message: types.Message):
     user_id = message.from_user.id
     db_pool = await get_db()
