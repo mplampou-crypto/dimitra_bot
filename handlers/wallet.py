@@ -174,11 +174,14 @@ async def paysafe_and_eneba_start(callback: CallbackQuery, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="10€", callback_data=f"ps_amt_10_{is_eneba}"),
-            InlineKeyboardButton(text="25€", callback_data=f"ps_amt_25_{is_eneba}")
+            InlineKeyboardButton(text="5€", callback_data=f"ps_amt_5_{is_eneba}"),
+            InlineKeyboardButton(text="10€", callback_data=f"ps_amt_10_{is_eneba}")
         ],
         [
-            InlineKeyboardButton(text="50€", callback_data=f"ps_amt_50_{is_eneba}"),
+            InlineKeyboardButton(text="25€", callback_data=f"ps_amt_25_{is_eneba}"),
+            InlineKeyboardButton(text="50€", callback_data=f"ps_amt_50_{is_eneba}")
+        ],
+        [
             InlineKeyboardButton(text="100€", callback_data=f"ps_amt_100_{is_eneba}")
         ],
         [InlineKeyboardButton(text="❌ Ακύρωση", callback_data="cancel_deposit")]
@@ -204,15 +207,16 @@ async def process_paysafe_amount_callback(callback: CallbackQuery, state: FSMCon
     ])
 
     if is_eneba:
-        # Links για Eneba ανάλογα με το ποσό
+        # Τα νέα links για Eneba
         eneba_links = {
-            10.0: "https://www.eneba.com/store/paysafecard-10-eur-greece",
-            25.0: "https://www.eneba.com/store/paysafecard-25-eur-greece",
-            50.0: "https://www.eneba.com/store/paysafecard-50-eur-greece",
-            100.0: "https://www.eneba.com/store/paysafecard-100-eur-greece"
+            5.0: "https://www.eneba.com/paysafecard-paysafecard-classic-5-eur-voucher-greece",
+            10.0: "https://www.eneba.com/paysafecard-paysafecard-classic-10-eur-voucher-greece",
+            25.0: "https://www.eneba.com/paysafecard-paysafecard-classic-25-eur-voucher-greece",
+            50.0: "https://www.eneba.com/paysafecard-paysafecard-classic-50-eur-voucher-greece",
+            100.0: "https://www.eneba.com/paysafecard-paysafecard-classic-100-eur-voucher-greece"
         }
         
-        # Αν δεν έχουμε link για κάποιο ποσό, βάζουμε το γενικό
+        # Αν δεν έχουμε link, βάζουμε το γενικό
         link = eneba_links.get(amount, "https://www.eneba.com/store/paysafecard-greece")
         
         text = (
