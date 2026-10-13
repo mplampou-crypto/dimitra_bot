@@ -13,7 +13,7 @@ router = Router()
 HELP_PHOTO_1 = "https://dummyimage.com/600x400/1a1a1a/ffffff&text=Vima+1"
 HELP_PHOTO_2 = "https://dummyimage.com/600x400/1a1a1a/ffffff&text=Vima+2"
 
-@router.message(F.text == "👛 Wallet")
+@router.message(F.text == "💰 Wallet")
 async def show_wallet(message: types.Message):
     user_id = message.from_user.id
     db_pool = await get_db()
@@ -51,14 +51,14 @@ async def show_wallet(message: types.Message):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Αγορά με Κάρτα (MoonPay)", callback_data="card_start")],
-        [InlineKeyboardButton(text="💶 Κατάθεση με PaySafe", callback_data="paysafe_start")],
+        [InlineKeyboardButton(text="🎟️ PaySafe (Από Περίπτερο)", callback_data="paysafe_start")],
+        [InlineKeyboardButton(text="🌐 PaySafe Online (Eneba)", callback_data="eneba_start")],
         [InlineKeyboardButton(text="❓ Βοήθεια / Πώς κάνω κατάθεση;", callback_data="wallet_help")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
 @router.callback_query(F.data == "wallet_help")
 async def show_wallet_help(callback: CallbackQuery):
-    # Στέλνει απευθείας τις φωτογραφίες-οδηγό
     media = [
         InputMediaPhoto(media=HELP_PHOTO_1, caption="Βήμα 1: Οδηγίες Κατάθεσης"),
         InputMediaPhoto(media=HELP_PHOTO_2, caption="Βήμα 2: Ολοκλήρωση Πληρωμής")
@@ -72,7 +72,7 @@ async def cancel_deposit_flow(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("❌ Η διαδικασία κατάθεσης ακυρώθηκε.", parse_mode="Markdown")
     await callback.answer("Ακυρώθηκε")
 
-# --- CARD (MOONPAY) FLOW ---
+# --- 1. CARD (MOONPAY) FLOW ---
 @router.callback_query(F.data == "card_start")
 async def card_start(callback: CallbackQuery, state: FSMContext):
     db_pool = await get_db()
@@ -156,9 +156,9 @@ async def process_card_screenshot(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# --- PAYSAFE FLOW ---
-@router.callback_query(F.data == "paysafe_start")
-async def paysafe_start(callback: CallbackQuery, state: FSMContext):
+# --- 2 & 3. PAYSAFE (ΠΕΡΙΠΤΕΡΟ ΚΑΙ ENEBA) FLOW ---
+@router.callback_query(F.data.in_({"paysafe_start", "eneba_start"}))
+async def paysafe_and_eneba_start(callback: CallbackQuery, state: FSMContext):
     db_pool = await get_db()
     if await has_pending_request(callback.from_user.id, db_pool):
         await callback.message.answer_photo(
@@ -169,45 +169,75 @@ async def paysafe_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
+    # Αποθηκεύουμε ποια μέθοδο διάλεξε (περίπτερο ή eneba) για το επόμενο βήμα
+    is_eneba = "eneba" in callback.data
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="5€", callback_data="ps_amt_5"),
-            InlineKeyboardButton(text="10€", callback_data="ps_amt_10"),
-            InlineKeyboardButton(text="25€", callback_data="ps_amt_25")
+            InlineKeyboardButton(text="10€", callback_data=f"ps_amt_10_{is_eneba}"),
+            InlineKeyboardButton(text="25€", callback_data=f"ps_amt_25_{is_eneba}")
         ],
         [
-            InlineKeyboardButton(text="50€", callback_data="ps_amt_50"),
-            InlineKeyboardButton(text="100€", callback_data="ps_amt_100")
-        ]
+            InlineKeyboardButton(text="50€", callback_data=f"ps_amt_50_{is_eneba}"),
+            InlineKeyboardButton(text="100€", callback_data=f"ps_amt_100_{is_eneba}")
+        ],
+        [InlineKeyboardButton(text="❌ Ακύρωση", callback_data="cancel_deposit")]
     ])
 
-    await callback.message.answer("💶 **Επίλεξε το ποσό της PaySafe** που θέλεις να καταθέσεις:", reply_markup=keyboard, parse_mode="Markdown")
+    title = "🌐 **PaySafe Online (μέσω Eneba)**" if is_eneba else "🎟️ **PaySafe (Από Περίπτερο)**"
+    msg = f"{title}\n\n💶 **Επίλεξε το ποσό** που θέλεις να καταθέσεις:"
+    
+    await callback.message.answer(msg, reply_markup=keyboard, parse_mode="Markdown")
     await state.set_state(PaySafeTopUp.waiting_for_amount)
     await callback.answer()
 
 @router.callback_query(PaySafeTopUp.waiting_for_amount, F.data.startswith("ps_amt_"))
 async def process_paysafe_amount_callback(callback: CallbackQuery, state: FSMContext):
-    amount = float(callback.data.split("_")[2])
+    parts = callback.data.split("_")
+    amount = float(parts[2])
+    is_eneba = parts[3] == "True"
+    
     await state.update_data(amount=amount)
     
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Ακύρωση Κατάθεσης", callback_data="cancel_deposit")]
+        [InlineKeyboardButton(text="❌ Ακύρωση", callback_data="cancel_deposit")]
     ])
+
+    if is_eneba:
+        # Links για Eneba ανάλογα με το ποσό
+        eneba_links = {
+            10.0: "https://www.eneba.com/store/paysafecard-10-eur-greece",
+            25.0: "https://www.eneba.com/store/paysafecard-25-eur-greece",
+            50.0: "https://www.eneba.com/store/paysafecard-50-eur-greece",
+            100.0: "https://www.eneba.com/store/paysafecard-100-eur-greece"
+        }
+        
+        # Αν δεν έχουμε link για κάποιο ποσό, βάζουμε το γενικό
+        link = eneba_links.get(amount, "https://www.eneba.com/store/paysafecard-greece")
+        
+        text = (
+            f"🌐 **Αγορά {amount}€ PaySafe (Eneba)**\n\n"
+            f"1️⃣ Πάτα το link: [Αγορά από Eneba]({link})\n"
+            f"2️⃣ Ολοκλήρωσε την αγορά με την κάρτα σου.\n"
+            f"3️⃣ **Όταν πάρεις τον 16-ψήφιο κωδικό PIN, γράψε τον μου εδώ:**"
+        )
+    else:
+        text = (
+            f"🎟️ **Κατάθεση {amount}€ PaySafe**\n\n"
+            f"🔢 **Γράψε τον 16-ψήφιο κωδικό της PaySafe σου (με παύλες ή χωρίς):**"
+        )
     
-    await callback.message.edit_text(
-        f"💶 Επέλεξες ποσό: **{amount}€**\n\n🔢 **Τώρα γράψε τον 12-ψήφιο κωδικό της PaySafe σου:**", 
-        reply_markup=cancel_kb,
-        parse_mode="Markdown"
-    )
+    await callback.message.edit_text(text, reply_markup=cancel_kb, parse_mode="Markdown", disable_web_page_preview=True)
     await state.set_state(PaySafeTopUp.waiting_for_code)
     await callback.answer()
 
 @router.message(PaySafeTopUp.waiting_for_code, F.text)
 async def process_paysafe_code(message: types.Message, state: FSMContext):
-    code = message.text.strip().replace(" ", "")
+    # Αφαιρούμε κενά και παύλες για να μετρήσουμε ψηφία
+    code = message.text.strip().replace(" ", "").replace("-", "")
     
-    if len(code) != 12 or not code.isdigit():
-        await message.answer("❌ ΛΑΘΟΣ! Ο κωδικός πρέπει να αποτελείται από **ακριβώς 12 νούμερα**.", parse_mode="Markdown")
+    if len(code) != 16 or not code.isdigit():
+        await message.answer("❌ ΛΑΘΟΣ! Ο κωδικός PaySafe αποτελείται από **ακριβώς 16 νούμερα**. Παρακαλώ ξαναγράψτον:", parse_mode="Markdown")
         return
     
     data = await state.get_data()
@@ -221,12 +251,15 @@ async def process_paysafe_code(message: types.Message, state: FSMContext):
             user_id, amount, code
         )
     
+    # Μορφοποίηση κωδικού με παύλες (1234-5678-9012-3456) για πιο εύκολη ανάγνωση από τον admin
+    formatted_code = f"{code[:4]}-{code[4:8]}-{code[8:12]}-{code[12:]}"
+    
     admin_text = (
         f"🔔 **ΝΕΟ ΑΙΤΗΜΑ PAYSAFE** 🔔\n\n"
         f"🆔 Αίτημα #: `{req_id}`\n"
         f"👤 Χρήστης ID: `{user_id}`\n"
         f"💰 Ποσό: **{amount}€**\n"
-        f"🔢 Κωδικός: `{code}`"
+        f"🔢 Κωδικός: `{formatted_code}`"
     )
     
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
