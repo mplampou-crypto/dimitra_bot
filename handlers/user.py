@@ -1,129 +1,128 @@
 import datetime
 from aiogram import Router, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
+# Σημείωση: Αφαιρέθηκε το UserOnboarding από εδώ γιατί δεν το χρειαζόμαστε πια
+from keyboards import main_menu, support_keyboard
 from database import get_db
-from utils import get_user_level_info, get_level_progress
+from utils import get_user_level_info
 
 router = Router()
 
-# Το κεντρικό μόνιμο μενού του bot
-def get_main_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🛍️ Catalog"), KeyboardButton(text="🖼️ Gallery")],
-            [KeyboardButton(text="🛒 Cart"), KeyboardButton(text="💰 Wallet")],
-            [KeyboardButton(text="🎟️ Promo Codes"), KeyboardButton(text="🎁 Giveaway")],
-            [KeyboardButton(text="ℹ️ Info & Links"), KeyboardButton(text="👤 Προφίλ")]
-        ],
-        resize_keyboard=True,
-        is_persistent=True # Κρατάει το μενού πάντα ανοιχτό στο κάτω μέρος
-    )
-
-@router.message(CommandStart())
+@router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    # Κλείνουμε οποιαδήποτε "κολλημένη" διαδικασία
+    # Καθαρίζουμε τυχόν "κολλημένες" καταστάσεις
     await state.clear()
     
     user_id = message.from_user.id
     db_pool = await get_db()
     
-    # Εγγράφουμε τον χρήστη κατευθείαν στη βάση. Παραλείπουμε Insta και TikTok.
+    # Εγγράφουμε τον χρήστη κατευθείαν. Βάζουμε 'Παραλείφθηκε' στα social 
+    # για να μην υπάρχει κενό στη βάση δεδομένων σου.
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (telegram_id, instagram, tiktok) 
-            VALUES ($1, 'Παραλείφθηκε', 'Παραλείφθηκε') 
-            ON CONFLICT (telegram_id) DO NOTHING;
-        """, user_id)
+        await conn.execute(
+            """INSERT INTO users (telegram_id, instagram, tiktok) 
+               VALUES ($1, 'Παραλείφθηκε', 'Παραλείφθηκε') 
+               ON CONFLICT (telegram_id) DO NOTHING;""",
+            user_id
+        )
         
-    welcome_text = (
-        f"Γεια σου {message.from_user.first_name}! 💋\n\n"
-        "Καλώς ήρθες στο επίσημο VIP Bot μου!\n\n"
-        "Εδώ μπορείς να δεις όλο το αποκλειστικό μου υλικό, να μαζέψεις πόντους "
-        "από τις αγορές σου και να ξεκλειδώσεις **δωρεάν** καυτά δώρα στην Gallery. 🔥\n\n"
-        "Διάλεξε από το μενού παρακάτω τι θέλεις να κάνεις:"
+    await message.answer(
+        f"Καλωσόρισες {message.from_user.first_name}! 💋\n\n"
+        "Χρησιμοποίησε το μενού παρακάτω για να πλοηγηθείς στις επιλογές μου και να ανακαλύψεις τον κατάλογο:",
+        reply_markup=main_menu()
+    )
+
+@router.message(F.text == "ℹ️ Info & Support")
+async def show_info(message: types.Message):
+    text = (
+        "Καλώς ήρθες! Είμαι η Δήμητρα, 22 χρόνων, με βάση τη Θεσσαλονίκη. Χαίρομαι που με βρήκες.\n\n"
+        "Εδώ μέσα μπορείς να ανακαλύψεις, να ξεκλειδώσεις και να αγοράσεις αυτόματα το πιο ξεχωριστό μου υλικό. "
+        "Περιηγήσου στο μενού παρακάτω για να δεις τις επιλογές.\n\n"
+        "Αν θες να τα πούμε ή αν χρειάζεσαι βοήθεια με τις καταθέσεις, πάτα ένα από τα παρακάτω κουμπιά! Σε περιμένω... ❤️💋🔞"
+    )
+    await message.answer(text, reply_markup=support_keyboard())
+
+@router.message(F.text == "👤 My Profile")
+async def show_profile(message: types.Message):
+    user_id = message.from_user.id
+    db_pool = await get_db()
+    
+    async with db_pool.acquire() as conn:
+        user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1;", user_id)
+        sub_info = await conn.fetchrow("SELECT expires_at FROM active_subscriptions WHERE telegram_id = $1;", user_id)
+        purchases = await conn.fetch(
+            "SELECT items_summary, total_price, created_at FROM purchases WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 5;",
+            user_id
+        )
+
+    if not user:
+        await message.answer("Δεν βρέθηκαν στοιχεία προφίλ. Πληκτρολόγησε /start.")
+        return
+
+    balance = user['balance']
+    points = user['lifetime_points']
+    tickets = user['giveaway_tickets']
+    
+    level_title, _ = get_user_level_info(points)
+
+    profile_text = (
+        f"👤 **Το Προφίλ σου**\n\n"
+        f"👛 **Υπόλοιπο:** {balance}€\n"
     )
     
-    await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="Markdown")
+    now = datetime.datetime.now()
+    if sub_info and sub_info['expires_at'] > now:
+        profile_text += f"⭐ **Premium Συνδρομή:** Ενεργή έως {sub_info['expires_at'].strftime('%d/%m/%Y %H:%M')}\n"
+    else:
+        profile_text += f"⭐ **Premium Συνδρομή:** Ανενεργή\n"
 
-# --- ΛΕΙΤΟΥΡΓΙΕΣ ΤΩΝ ΝΕΩΝ ΚΟΥΜΠΙΩΝ ---
+    profile_text += (
+        f"⭐ **Πόντοι:** {points}\n"
+        f"🎖️ **Βαθμίδα:** {level_title}\n\n"
+        f"🎟️ **Εισιτήρια Κλήρωσης:** {tickets}\n\n"
+        f"📜 **Πρόσφατες Αγορές:**\n"
+    )
+
+    if purchases:
+        for p in purchases:
+            profile_text += f"- {p['items_summary']} ({p['total_price']}€) στις {p['created_at'].strftime('%d/%m %H:%M')}\n"
+    else:
+        profile_text += "Δεν έχεις κάνει κάποια αγορά ακόμα."
+
+    await message.answer(profile_text, parse_mode="Markdown")
 
 @router.message(F.text == "🎁 Giveaway")
 async def show_giveaway(message: types.Message):
     db_pool = await get_db()
+    
     async with db_pool.acquire() as conn:
-        giveaway = await conn.fetchrow("SELECT ends_at, prizes FROM giveaway_settings WHERE id = 1;")
-        user_data = await conn.fetchrow("SELECT giveaway_tickets FROM users WHERE telegram_id = $1;", message.from_user.id)
-        tickets = user_data['giveaway_tickets'] if user_data else 0
+        settings = await conn.fetchrow("SELECT ends_at, prizes FROM giveaway_settings WHERE id = 1;")
+        now = datetime.datetime.now()
+        
+        if settings and settings['ends_at'] <= now:
+            text = (
+                f"🎁 **Μεγάλη Κλήρωση**\n\n"
+                f"🏁 **Η προηγούμενη κλήρωση έχει λήξει!**\n"
+                f"⏳ Σύντομα θα ξεκινήσει καινούρια. Μείνε συντονισμένος!\n\n"
+                f"💡 *Κάθε 10€ αγορών (50 πόντοι) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
+            )
+        else:
+            total_tickets = await conn.fetchval("SELECT SUM(giveaway_tickets) FROM users;") or 0
+            
+            remaining_time = settings['ends_at'] - now
+            hours, remainder = divmod(int(remaining_time.total_seconds()), 3600)
+            minutes, _ = divmod(remainder, 60)
+            
+            prizes_text = settings['prizes'] if settings['prizes'] else "Τα δώρα δεν έχουν ανακοινωθεί ακόμα!"
 
-    if not giveaway or not giveaway['ends_at'] or giveaway['ends_at'].year == 2000:
-        await message.answer("Δεν τρέχει κάποια κλήρωση αυτή τη στιγμή. Μείνε συντονισμένος/η! 💋")
-        return
-
-    now = datetime.datetime.now()
-    if now > giveaway['ends_at']:
-        await message.answer("Η κλήρωση έχει λήξει! Αναμένουμε τα αποτελέσματα. 🎁")
-        return
-
-    time_left = giveaway['ends_at'] - now
-    hours, remainder = divmod(int(time_left.total_seconds()), 3600)
-    minutes, _ = divmod(remainder, 60)
-
-    text = (
-        "🚨 **MEGA VIP ΚΛΗΡΩΣΗ** 🚨\n\n"
-        f"🎁 **Τα Δώρα μας:**\n{giveaway['prizes']}\n\n"
-        f"⏳ **Λήγει σε:** {hours} ώρες και {minutes} λεπτά!\n\n"
-        f"🎟️ **Τα δικά σου εισιτήρια:** {tickets}\n\n"
-        "💡 _Υπενθύμιση: Κάθε 10€ αγορών σου δίνουν αυτόματα 1 επιπλέον εισιτήριο!_"
-    )
-    await message.answer(text, parse_mode="Markdown")
-
-@router.message(F.text == "🎟️ Promo Codes")
-async def show_promo_info(message: types.Message):
-    text = (
-        "🎟️ **Εκπτωτικοί Κωδικοί (Promo Codes)**\n\n"
-        "Όταν έχεις κάποιον κωδικό προσφοράς, τον χρησιμοποιείς την ώρα που κάνεις την παραγγελία σου μέσα στο **Καλάθι (Cart)**! 🛒\n\n"
-        "👉 Πάτα 'Cart' και θα δεις την επιλογή για εισαγωγή κωδικού.\n\n"
-        "Μείνε συντονισμένος/η στο κανάλι για να προλαβαίνεις τα νέα Promo Codes που ανεβάζω! 💋"
-    )
-    await message.answer(text, parse_mode="Markdown")
-
-@router.message(F.text == "ℹ️ Info & Links")
-async def show_info_links(message: types.Message):
-    text = (
-        "ℹ️ **Χρήσιμοι Σύνδεσμοι & Πληροφορίες**\n\n"
-        "Ό,τι χρειάζεσαι είναι εδώ:\n\n"
-        "💬 **Επικοινωνία μαζί μου:** Στείλε μου DM για βοήθεια ή εξαργύρωση δώρων.\n"
-        "📣 **Κανάλι Ενημερώσεων:** Εκεί ανεβάζω νέα teasers και κληρώσεις!\n"
-        "⭐ **Premium VIP:** Η κλειστή μας ομάδα μόνο για συνδρομητές.\n\n"
-        "*(Αν δεν έχεις τα links, στείλε μου προσωπικό μήνυμα να στα δώσω!)* 💋"
-    )
-    await message.answer(text, parse_mode="Markdown")
-
-@router.message(F.text == "👤 Προφίλ")
-async def show_profile(message: types.Message):
-    user_id = message.from_user.id
-    db_pool = await get_db()
-    async with db_pool.acquire() as conn:
-        user = await conn.fetchrow("SELECT balance, lifetime_points, total_spent, giveaway_tickets FROM users WHERE telegram_id = $1;", user_id)
-
-    if not user:
-        await message.answer("Δεν βρέθηκε προφίλ. Πάτα /start για να ξεκινήσεις!")
-        return
-
-    points = user['lifetime_points'] or 0
-    current_title, _ = get_user_level_info(points)
-    bar_string, next_level_string, _ = get_level_progress(points)
-
-    text = (
-        f"👤 **Το Προφίλ σου**\n\n"
-        f"🎖️ **Level:** {current_title}\n"
-        f"⭐ **Πόντοι:** {points}\n"
-        f"{bar_string}\n"
-        f"📈 _{next_level_string}_\n\n"
-        f"💰 **Διαθέσιμο Υπόλοιπο:** {user['balance']}€\n"
-        f"🛍️ **Συνολικά Έξοδα:** {user['total_spent']}€\n"
-        f"🎟️ **Εισιτήρια Κλήρωσης:** {user['giveaway_tickets']}"
-    )
+            text = (
+                f"🎁 **Μεγάλη Κλήρωση**\n\n"
+                f"🎟️ **Συνολικά Εισιτήρια που έχουν δοθεί:** {total_tickets}\n"
+                f"⏳ **Λήξη Κλήρωσης σε:** {hours} ώρες και {minutes} λεπτά!\n\n"
+                f"🎁 **Τα Δώρα της Κλήρωσης:**\n{prizes_text}\n\n"
+                f"💡 *Κάθε 10€ αγορών (50 πόντοι) σου εξασφαλίζουν αυτόματα 1 εισιτήριο!*"
+            )
+            
     await message.answer(text, parse_mode="Markdown")
