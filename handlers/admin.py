@@ -167,25 +167,20 @@ async def ask_placement(message: types.Message, state: FSMContext):
     await message.answer("Πού θέλεις να ανέβει αυτό το υλικό;", reply_markup=kb)
     await state.set_state(UploadMedia.waiting_for_placement)
 
-@router.callback_query(UploadMedia.waiting_for_placement, F.data.startswith("place_"))
-async def placement_decision(callback: CallbackQuery, state: FSMContext):
-    choice = callback.data.split("_")[1]
-    if choice == "catalog":
-        await state.update_data(is_gallery=False)
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 VIP", callback_data="cat_vip")],
-            [InlineKeyboardButton(text="📸 Φωτό", callback_data="cat_photo"), InlineKeyboardButton(text="🎥 Βίντεο", callback_data="cat_video")]
-        ])
-        await callback.message.edit_text("Επίλεξε υποκατηγορία καταλόγου:", reply_markup=kb)
-        await state.set_state(UploadMedia.waiting_for_catalog_cat)
-    else:
-        await state.update_data(is_gallery=True, category="photo")
-        await callback.message.edit_text("Για ποιο Level θέλεις να είναι ορατό;\n0=Πρωτάρης, 1=Τολμηρός, 2=Ορεξάτος, 3=Αφέντης, 4=VIP")
-        await state.set_state(UploadMedia.waiting_for_gallery_level)
-
 @router.callback_query(UploadMedia.waiting_for_catalog_cat, F.data.startswith("cat_"))
 async def process_cat(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(category=callback.data.split("_")[1], unlock_level=0, unlock_percentage=0)
+    raw_cat = callback.data.split("_")[1]
+    
+    # Μετατρέπουμε τα αγγλικά callback_data στα σωστά ονόματα κατηγοριών που ψάχνει το bot
+    final_category = raw_cat
+    if raw_cat == "photo":
+        final_category = "Φωτογραφίες"
+    elif raw_cat == "video":
+        final_category = "Βίντεο"
+    elif raw_cat == "vip":
+        final_category = "VIP"
+        
+    await state.update_data(category=final_category, unlock_level=0, unlock_percentage=0)
     await callback.message.edit_text("✍️ Γράψε περιγραφή:")
     await state.set_state(UploadMedia.waiting_for_description)
 
