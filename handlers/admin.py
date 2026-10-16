@@ -171,14 +171,14 @@ async def placement_decision(callback: CallbackQuery, state: FSMContext):
     choice = callback.data.split("_")[1]
     if choice == "catalog":
         await state.update_data(is_gallery=False)
+        # ΑΛΛΑΓΗ ΕΔΩ: Αλλάξαμε τα callback data για να μην μπερδεύονται με του Καταλόγου!
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 VIP", callback_data="cat_vip")],
-            [InlineKeyboardButton(text="📸 Φωτό", callback_data="cat_photo"), InlineKeyboardButton(text="🎥 Βίντεο", callback_data="cat_video")]
+            [InlineKeyboardButton(text="💎 VIP", callback_data="uploadcat_vip")],
+            [InlineKeyboardButton(text="📸 Φωτό", callback_data="uploadcat_photo"), InlineKeyboardButton(text="🎥 Βίντεο", callback_data="uploadcat_video")]
         ])
         await callback.message.edit_text("Επίλεξε υποκατηγορία καταλόγου:", reply_markup=kb)
         await state.set_state(UploadMedia.waiting_for_catalog_cat)
     else:
-        # Εδώ διορθώθηκε το πρόβλημα με τα βίντεο στην Gallery!
         data = await state.get_data()
         correct_category = "video" if "video" in data.get("media_types", []) else "photo"
         await state.update_data(is_gallery=True, category=correct_category)
@@ -186,9 +186,9 @@ async def placement_decision(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Για ποιο Level θέλεις να είναι ορατό;\n0=Πρωτάρης, 1=Τολμηρός, 2=Ορεξάτος, 3=Αφέντης, 4=VIP")
         await state.set_state(UploadMedia.waiting_for_gallery_level)
 
-@router.callback_query(UploadMedia.waiting_for_catalog_cat, F.data.startswith("cat_"))
+@router.callback_query(UploadMedia.waiting_for_catalog_cat, F.data.startswith("uploadcat_"))
 async def process_cat(callback: CallbackQuery, state: FSMContext):
-    # Αυτό αποθηκεύει σωστά "photo", "video" ή "vip" όπως ακριβώς το ψάχνει η βάση!
+    # Παίρνουμε σωστά τα 'photo', 'video' ή 'vip' από το νέο callback
     await state.update_data(category=callback.data.split("_")[1], unlock_level=0, unlock_percentage=0)
     await callback.message.edit_text("✍️ Γράψε περιγραφή:")
     await state.set_state(UploadMedia.waiting_for_description)
