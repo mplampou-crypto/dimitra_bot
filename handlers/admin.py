@@ -25,7 +25,6 @@ async def admin_dashboard(message: types.Message):
         lvl3 = await conn.fetchval("SELECT COUNT(*) FROM users WHERE lifetime_points BETWEEN 651 AND 900;")
         lvl4 = await conn.fetchval("SELECT COUNT(*) FROM users WHERE lifetime_points >= 901;")
         
-        # Ασφαλής μετατροπή σε float για να μην υπάρχει πρόβλημα στην πρόσθεση
         paysafe_sum = float(await conn.fetchval("SELECT SUM(amount) FROM paysafe_requests WHERE status = 'accepted';") or 0.0)
         moonpay_sum = float(await conn.fetchval("SELECT SUM(amount) FROM moonpay_requests WHERE status = 'accepted';") or 0.0)
         total_revenue = paysafe_sum + moonpay_sum
@@ -167,20 +166,30 @@ async def ask_placement(message: types.Message, state: FSMContext):
     await message.answer("Πού θέλεις να ανέβει αυτό το υλικό;", reply_markup=kb)
     await state.set_state(UploadMedia.waiting_for_placement)
 
+@router.callback_query(UploadMedia.waiting_for_placement, F.data.startswith("place_"))
+async def placement_decision(callback: CallbackQuery, state: FSMContext):
+    choice = callback.data.split("_")[1]
+    if choice == "catalog":
+        await state.update_data(is_gallery=False)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 VIP", callback_data="cat_vip")],
+            [InlineKeyboardButton(text="📸 Φωτό", callback_data="cat_photo"), InlineKeyboardButton(text="🎥 Βίντεο", callback_data="cat_video")]
+        ])
+        await callback.message.edit_text("Επίλεξε υποκατηγορία καταλόγου:", reply_markup=kb)
+        await state.set_state(UploadMedia.waiting_for_catalog_cat)
+    else:
+        # Εδώ διορθώθηκε το πρόβλημα με τα βίντεο στην Gallery!
+        data = await state.get_data()
+        correct_category = "video" if "video" in data.get("media_types", []) else "photo"
+        await state.update_data(is_gallery=True, category=correct_category)
+        
+        await callback.message.edit_text("Για ποιο Level θέλεις να είναι ορατό;\n0=Πρωτάρης, 1=Τολμηρός, 2=Ορεξάτος, 3=Αφέντης, 4=VIP")
+        await state.set_state(UploadMedia.waiting_for_gallery_level)
+
 @router.callback_query(UploadMedia.waiting_for_catalog_cat, F.data.startswith("cat_"))
 async def process_cat(callback: CallbackQuery, state: FSMContext):
-    raw_cat = callback.data.split("_")[1]
-    
-    # Μετατρέπουμε τα αγγλικά callback_data στα σωστά ονόματα κατηγοριών που ψάχνει το bot
-    final_category = raw_cat
-    if raw_cat == "photo":
-        final_category = "Φωτογραφίες"
-    elif raw_cat == "video":
-        final_category = "Βίντεο"
-    elif raw_cat == "vip":
-        final_category = "VIP"
-        
-    await state.update_data(category=final_category, unlock_level=0, unlock_percentage=0)
+    # Αυτό αποθηκεύει σωστά "photo", "video" ή "vip" όπως ακριβώς το ψάχνει η βάση!
+    await state.update_data(category=callback.data.split("_")[1], unlock_level=0, unlock_percentage=0)
     await callback.message.edit_text("✍️ Γράψε περιγραφή:")
     await state.set_state(UploadMedia.waiting_for_description)
 
@@ -203,7 +212,6 @@ async def receive_desc(message: types.Message, state: FSMContext):
     await state.update_data(description=description)
     
     if data.get('is_gallery', False):
-        # Αν είναι Gallery, το ανεβάζουμε ΑΜΕΣΩΣ με τιμή 0€ (Δωρεάν)
         db_pool = await get_db()
         async with db_pool.acquire() as conn:
             await conn.execute(
@@ -214,7 +222,6 @@ async def receive_desc(message: types.Message, state: FSMContext):
         await message.answer("✅ Το υλικό ανέβηκε στην Gallery! (Ρυθμίστηκε αυτόματα ως Δωρεάν ξεκλείδωμα).")
         await state.clear()
     else:
-        # Αν είναι Κατάλογος, ρωτάμε κανονικά για τιμή
         await message.answer("💰 Τιμή (σε ευρώ):")
         await state.set_state(UploadMedia.waiting_for_price)
 
